@@ -1,0 +1,49 @@
+{
+  "name": "riff",
+  // Node is the toolchain the whole repo turns on: it builds the agent bundle every binding ships
+  // and runs the TypeScript suite. Pinned to 22 to match the version CI uses.
+  //
+  // The Swift binding is deliberately absent. `RiffAudio` imports AVFoundation unguarded, so the
+  // package does not build on Linux at all — `swift test` runs on macOS locally and on `macos-15`
+  // in CI. Adding a Swift toolchain here would only buy a compile error.
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/git:1": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    // Rust and Kotlin bindings are next, and both build on Linux. Installing the toolchains now
+    // means the container is ready when those land instead of needing a rebuild mid-task.
+    "ghcr.io/devcontainers/features/rust:1": {},
+    "ghcr.io/devcontainers/features/java:1": {
+      "version": "21",
+      "installGradle": true
+    },
+    // Runs copilotd inside the container so an agent can drive this workspace. `relay` connects
+    // outbound rather than exposing the listener. Tracks `latest` rather than a pinned release: the
+    // daemon ships often and a pin here goes stale without anyone noticing.
+    "ghcr.io/github/copilot-host/copilotd:latest": {
+      "relay": true
+    }
+  },
+  "forwardPorts": [8765],
+  "portsAttributes": {
+    // copilotd has no TLS or auth on its listener, so this stays private.
+    "8765": {
+      "label": "copilotd (AHP)",
+      "onAutoForward": "notify",
+      "visibility": "private"
+    }
+  },
+  "otherPortsAttributes": {
+    "visibility": "private"
+  },
+  "postCreateCommand": "npm install",
+  "remoteEnv": {
+    "RUST_LOG": "info,copilotd=trace,copilot_ahp_host=trace",
+    "COPILOTD_GITHUB_PLUGINS": "true"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": ["rust-lang.rust-analyzer", "fwcd.kotlin"]
+    }
+  }
+}
