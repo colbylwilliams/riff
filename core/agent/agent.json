@@ -1,0 +1,94 @@
+{
+  "$schema": "../schema/agent-manifest.schema.json",
+  "id": "riff",
+  "name": "Riff",
+  "version": "1.0.0",
+  "description": "A voice agent that turns spoken thinking into a finished prompt for another agent, written in the speaker's own words.",
+  "instructions": [
+    "instructions/00-identity.md",
+    "instructions/10-voice-fidelity.md",
+    "instructions/20-scope-boundary.md",
+    "instructions/30-questions.md",
+    "instructions/40-feedback.md",
+    "instructions/50-context.md",
+    "instructions/60-corrections.md",
+    "instructions/70-motifs.md",
+    "instructions/80-speaking.md",
+    "instructions/90-handoff.md",
+    "instructions/95-tools.md"
+  ],
+  "tools": [
+    "tools/draft_update.json",
+    "tools/read_draft.json",
+    "tools/resolve_reference.json",
+    "tools/lookup_term.json",
+    "tools/record_term.json",
+    "tools/recall_prompts.json",
+    "tools/motifs.json",
+    "tools/takes.json",
+    "tools/submit_prompt.json"
+  ],
+  "session": "session.json",
+  "lexicon": "lexicon.seed.json",
+  "grounding": {
+    "threshold": 0.82,
+    "titleThreshold": 0.5,
+    "windowSize": 4,
+    "sections": {
+      "intent": "strict",
+      "detail": "strict",
+      "constraint": "motif-or-strict",
+      "acceptance": "strict",
+      "open_question": "strict"
+    },
+    "freeTokens": [
+      "a", "an", "and", "the", "to", "of", "in", "on", "for", "it", "is", "that",
+      "this", "so", "then", "with", "at", "as", "by", "or", "but", "we", "i"
+    ],
+    "filler": [
+      "um", "uh", "erm", "ah", "eh", "hmm", "mm", "mmhmm", "like", "okay", "ok",
+      "right", "so", "well", "you know", "i mean", "kind of", "sort of",
+      "basically", "actually", "literally", "just", "anyway", "let's see",
+      "let me think", "hold on", "wait"
+    ]
+  },
+  "render": {
+    "profile": "prose",
+    "profiles": {
+      "prose": {
+        "title": "h1",
+        "intent": "paragraphs",
+        "detail": "paragraphs",
+        "constraint": "labeled-list",
+        "acceptance": "labeled-list",
+        "open_question": "labeled-list",
+        "context": "labeled-list"
+      },
+      "structured": {
+        "title": "h1",
+        "intent": "paragraphs",
+        "detail": "section-list",
+        "constraint": "section-list",
+        "acceptance": "section-list",
+        "open_question": "section-list",
+        "context": "section-list"
+      }
+    },
+    "labels": {
+      "detail": "Details",
+      "constraint": "Constraints",
+      "acceptance": "Done when",
+      "open_question": "Open questions",
+      "context": "Context"
+    },
+    "includeProvenanceFooter": false
+  },
+  "policy": {
+    "maxTakes": 8,
+    "readinessRequires": ["intent"],
+    "autoSubmit": false,
+    "readbackDefault": "gist",
+    "persistAudio": false,
+    "redactSecretsFromTranscript": true
+  }
+}

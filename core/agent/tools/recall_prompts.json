@@ -1,0 +1,39 @@
+{
+  "name": "recall_prompts",
+  "kind": "host",
+  "description": "Search prompts they have written before. Use it when they refer back to an earlier request ('like the one I did for the auth service'), when you need the outcome of a previous prompt, or when you need to know how they normally phrase this kind of thing. Their old wording is a legitimate source of their words.",
+  "parameters": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["query"],
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "What to look for, in their terms."
+      },
+      "recency": {
+        "type": "string",
+        "enum": ["latest", "today", "this_week", "this_month", "any"],
+        "default": "any"
+      },
+      "status": {
+        "type": "string",
+        "enum": ["any", "submitted", "parked"],
+        "default": "any"
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 10,
+        "default": 5
+      }
+    }
+  },
+  "returns": {
+    "type": "object",
+    "description": "prompts[] each with prompt_id, title, submitted_at, status, an excerpt, and any recorded outcome.",
+    "properties": {
+      "prompts": { "type": "array", "items": { "type": "object" } }
+    }
+  }
+}

@@ -1,0 +1,134 @@
+{
+  "$comment": "Cases every Riff binding must reproduce. The grounding check is the mechanism that keeps a prompt in the speaker's voice, so it is specified as data rather than left to each implementation to interpret.",
+  "defaults": {
+    "threshold": 0.82,
+    "titleThreshold": 0.5,
+    "windowSize": 4
+  },
+  "cases": [
+    {
+      "id": "verbatim",
+      "description": "Exactly what they said goes in untouched.",
+      "utterances": ["the login page is broken on Safari"],
+      "candidate": "the login page is broken on Safari",
+      "expect": { "ok": true, "kind": "verbatim", "ratio": 1 }
+    },
+    {
+      "id": "filler-removed",
+      "description": "Filler comes out; that is a deletion, not a rewrite.",
+      "utterances": ["um so like the login page is basically broken on Safari"],
+      "candidate": "the login page is broken on Safari",
+      "expect": { "ok": true, "kind": "trimmed", "ratio": 1 }
+    },
+    {
+      "id": "false-start-dropped",
+      "description": "An abandoned fragment is dropped and the finished thought is kept.",
+      "utterances": ["we should maybe actually the retry logic needs a backoff"],
+      "candidate": "the retry logic needs a backoff",
+      "expect": { "ok": true, "kind": "trimmed", "ratio": 1 }
+    },
+    {
+      "id": "article-added",
+      "description": "Connective words may be added; they carry no meaning of their own.",
+      "utterances": ["uploader retries three times then gives up"],
+      "candidate": "the uploader retries three times then gives up",
+      "expect": { "ok": true, "ratio": 1 }
+    },
+    {
+      "id": "paraphrase-rejected",
+      "description": "Same meaning, different words. This is the failure the check exists to prevent.",
+      "utterances": ["the login page is busted on Safari"],
+      "candidate": "the sign-in screen is not working correctly in Safari",
+      "expect": { "ok": false, "unmatchedIncludes": ["sign-in", "screen", "working", "correctly"] }
+    },
+    {
+      "id": "vocabulary-upgraded-rejected",
+      "description": "Making them sound more professional is exactly what must not happen.",
+      "utterances": ["make it stop blowing up when the file is huge"],
+      "candidate": "improve application stability when handling large files",
+      "expect": { "ok": false }
+    },
+    {
+      "id": "word-order-changed-rejected",
+      "description": "Every word is theirs but the order is not, which reads as a rewrite.",
+      "utterances": ["the parser handles the header before the body"],
+      "candidate": "the parser handles the body before the header",
+      "expect": { "ok": false }
+    },
+    {
+      "id": "detail-invented-rejected",
+      "description": "Plausible additions are still additions.",
+      "utterances": ["fix the flaky test"],
+      "candidate": "fix the flaky test in the CI pipeline",
+      "expect": { "ok": false, "unmatchedIncludes": ["ci", "pipeline"] }
+    },
+    {
+      "id": "spans-two-utterances",
+      "description": "Transcription splits on pauses, not sentences, so one sentence arrives as two.",
+      "utterances": ["the migration keeps timing out", "on the big tables"],
+      "candidate": "the migration keeps timing out on the big tables",
+      "expect": { "ok": true, "ratio": 1, "sourceUtterances": ["u1", "u2"] }
+    },
+    {
+      "id": "spans-four-utterances",
+      "description": "The window reaches as far as the configured size and no further.",
+      "utterances": ["we need to", "cache the avatar images", "so the feed", "stops flickering"],
+      "candidate": "cache the avatar images so the feed stops flickering",
+      "expect": { "ok": true, "ratio": 1 }
+    },
+    {
+      "id": "lexicon-corrects-transcription",
+      "description": "A misheard product name is fixed without that counting as a rewrite.",
+      "utterances": ["the get hub action is failing on every push"],
+      "lexicon": [{ "canonical": "GitHub", "kind": "product", "heardAs": ["get hub"] }],
+      "candidate": "the GitHub action is failing on every push",
+      "expect": { "ok": true, "kind": "corrected", "ratio": 1 }
+    },
+    {
+      "id": "one-sentence-from-a-long-turn",
+      "description": "Selecting one sentence out of a rambling turn is the normal case.",
+      "utterances": [
+        "okay so I was looking at the dashboard this morning and the numbers looked fine but then I noticed the export button does nothing when you have more than a thousand rows and I think that has been broken for a while"
+      ],
+      "candidate": "the export button does nothing when you have more than a thousand rows",
+      "expect": { "ok": true, "kind": "trimmed", "ratio": 1 }
+    },
+    {
+      "id": "later-correction-is-groundable",
+      "description": "After a correction, the new wording is grounded and the old one still is too.",
+      "utterances": ["roll it back to the previous release", "no wait roll it back two releases"],
+      "candidate": "roll it back two releases",
+      "expect": { "ok": true, "ratio": 1 }
+    },
+    {
+      "id": "nothing-said-yet",
+      "description": "With an empty ledger nothing can be grounded, so nothing can be drafted.",
+      "utterances": [],
+      "candidate": "fix the login page",
+      "expect": { "ok": false, "ratio": 0 }
+    },
+    {
+      "id": "content-free-line-rejected",
+      "description": "A line made only of connective words says nothing and does not belong in a prompt.",
+      "utterances": ["the login page is broken"],
+      "candidate": "and so it is that the",
+      "expect": { "ok": false, "ratio": 0 }
+    },
+    {
+      "id": "title-is-held-to-a-looser-bar",
+      "description": "A title is a label rather than part of the request, so it may compress harder.",
+      "utterances": ["the uploader keeps dying on big files"],
+      "candidate": "Fix the uploader",
+      "mode": "title",
+      "expect": { "ok": true }
+    },
+    {
+      "id": "title-still-uses-their-words",
+      "description": "Even a title may not introduce vocabulary they never used.",
+      "utterances": ["the uploader keeps dying on big files"],
+      "candidate": "Resolve intermittent storage subsystem degradation",
+      "mode": "title",
+      "expect": { "ok": false }
+    }
+  ]
+}

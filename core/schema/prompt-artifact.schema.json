@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://riff.dev/schema/prompt-artifact.schema.json",
+  "title": "Riff prompt artifact",
+  "description": "The output of a Riff session: a prompt for a downstream agent, plus the provenance that proves the body came from the speaker.",
+  "type": "object",
+  "required": ["id", "takeId", "createdAt", "updatedAt", "title", "lines", "context", "provenance", "rendered"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string" },
+    "takeId": { "type": "string" },
+    "label": { "type": "string", "description": "Short handle the speaker can recognize when several takes are open." },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "updatedAt": { "type": "string", "format": "date-time" },
+    "title": {
+      "type": "object",
+      "required": ["text", "origin"],
+      "additionalProperties": false,
+      "properties": {
+        "text": { "type": "string" },
+        "origin": {
+          "type": "string",
+          "enum": ["derived", "spoken"],
+          "description": "derived means the agent assembled it from words the speaker used; it is a label, never part of the request."
+        }
+      }
+    },
+    "lines": { "type": "array", "items": { "$ref": "#/$defs/line" } },
+    "context": { "type": "array", "items": { "$ref": "#/$defs/contextItem" } },
+    "terms": {
+      "type": "array",
+      "description": "Terms applied to the transcript, carried through so the downstream agent reads them the same way.",
+      "items": {
+        "type": "object",
+        "required": ["canonical"],
+        "additionalProperties": false,
+        "properties": {
+          "canonical": { "type": "string" },
+          "heardAs": { "type": "array", "items": { "type": "string" } },
+          "definition": { "type": "string" },
+          "kind": { "type": "string" }
+        }
+      }
+    },
+    "provenance": { "$ref": "#/$defs/provenance" },
+    "rendered": {
+      "type": "string",
+      "description": "The prompt as the downstream agent receives it."
+    },
+    "target": { "type": "string" },
+    "status": { "type": "string", "enum": ["drafting", "ready", "submitted", "parked", "discarded"] }
+  },
+  "$defs": {
+    "line": {
+      "type": "object",
+      "required": ["id", "section", "text", "order", "grounding"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "section": {
+          "type": "string",
+          "enum": ["intent", "detail", "constraint", "acceptance", "open_question"]
+        },
+        "text": { "type": "string" },
+        "order": { "type": "number" },
+        "sourceUtteranceIds": { "type": "array", "items": { "type": "string" } },
+        "motifId": { "type": "string" },
+        "supersedes": { "type": "array", "items": { "type": "string" } },
+        "grounding": {
+          "type": "object",
+          "required": ["ratio", "kind"],
+          "additionalProperties": false,
+          "properties": {
+            "ratio": { "type": "number", "minimum": 0, "maximum": 1 },
+            "kind": {
+              "type": "string",
+              "enum": ["verbatim", "trimmed", "corrected", "motif", "derived"],
+              "description": "verbatim: exactly as spoken. trimmed: spoken words with filler or fragments removed. corrected: trimmed plus lexicon spelling fixes. motif: a saved standing instruction, itself captured verbatim. derived: agent-authored, permitted only where the manifest allows it."
+            },
+            "unmatchedTokens": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "contextItem": {
+      "type": "object",
+      "required": ["referenceId", "kind", "title"],
+      "additionalProperties": false,
+      "properties": {
+        "referenceId": { "type": "string" },
+        "kind": { "type": "string" },
+        "title": { "type": "string" },
+        "identifier": { "type": "string", "description": "Human-facing handle such as owner/repo#412." },
+        "url": { "type": "string" },
+        "actor": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "state": { "type": "string" },
+        "summary": { "type": "string" },
+        "resolvedFrom": { "type": "string", "description": "The phrase the speaker actually used." },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["fidelity", "utteranceCount", "agentAuthoredTokens", "bodyTokens"],
+      "additionalProperties": false,
+      "properties": {
+        "fidelity": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Token-weighted share of the prompt body recoverable from what the speaker said."
+        },
+        "utteranceCount": { "type": "integer", "minimum": 0 },
+        "bodyTokens": { "type": "integer", "minimum": 0 },
+        "agentAuthoredTokens": { "type": "integer", "minimum": 0 },
+        "agentVersion": { "type": "string" },
+        "bundleRevision": { "type": "string" },
+        "providerId": { "type": "string" },
+        "model": { "type": "string" },
+        "sessionId": { "type": "string" },
+        "durationMs": { "type": "integer", "minimum": 0 },
+        "toolCalls": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "at"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string" },
+              "at": { "type": "string", "format": "date-time" },
+              "durationMs": { "type": "integer" },
+              "ok": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

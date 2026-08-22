@@ -1,0 +1,33 @@
+{
+  "name": "submit_prompt",
+  "kind": "host",
+  "description": "Hand the finished prompt to the agent that will do the work. Only when they say to send it. Do not confirm first and do not read it back.",
+  "parameters": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "take_id": {
+        "type": "string",
+        "description": "Take to submit. Omit to use the active take."
+      },
+      "target": {
+        "type": "string",
+        "description": "Where to send it, when they named somewhere. A host-defined destination id. Omit for the host default."
+      },
+      "keep_open": {
+        "type": "boolean",
+        "default": false,
+        "description": "Keep the take active after sending, for when they said they will keep going on the same thing."
+      }
+    }
+  },
+  "returns": {
+    "type": "object",
+    "description": "submitted, prompt_id, destination, and url when the host has one.",
+    "properties": {
+      "submitted": { "type": "boolean" },
+      "prompt_id": { "type": "string" },
+      "url": { "type": "string" }
+    }
+  }
+}

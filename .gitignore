@@ -60,3 +60,11 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
+# Node
+node_modules/
+packages/*/dist/
+*.tsbuildinfo
+
+# Local scratch, ignored by convention
+.local/

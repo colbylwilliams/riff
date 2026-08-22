@@ -1,0 +1,37 @@
+{
+  "name": "record_term",
+  "kind": "local",
+  "description": "Teach the lexicon a term the transcriber gets wrong, so it is right next time. Call it when you learn the correct form of something, whether from a lookup or because they spelled it out.",
+  "parameters": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["canonical", "kind"],
+    "properties": {
+      "canonical": {
+        "type": "string",
+        "description": "The correct written form."
+      },
+      "kind": {
+        "type": "string",
+        "enum": ["repository", "service", "product", "acronym", "person", "team", "file", "other"]
+      },
+      "heard_as": {
+        "type": "array",
+        "items": { "type": "string" },
+        "maxItems": 10,
+        "description": "Ways the transcriber has rendered it wrong. These become automatic corrections."
+      },
+      "definition": {
+        "type": "string",
+        "maxLength": 300,
+        "description": "One line on what it is, only if you actually know."
+      },
+      "scope": {
+        "type": "string",
+        "enum": ["session", "user", "workspace"],
+        "default": "user",
+        "description": "How widely the correction applies."
+      }
+    }
+  }
+}

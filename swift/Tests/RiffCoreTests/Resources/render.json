@@ -1,0 +1,68 @@
+{
+  "$comment": "How a finished draft becomes the text the downstream agent receives. Every binding must produce these strings byte for byte, so a prompt reads the same whether it was captured on a phone or at a desk.",
+  "cases": [
+    {
+      "id": "prose-intent-only",
+      "description": "The common case: a short request and nothing else.",
+      "profile": "prose",
+      "take": {
+        "title": "Fix the Safari login page",
+        "lines": [{ "section": "intent", "text": "the login page is broken on Safari" }]
+      },
+      "expect": "# Fix the Safari login page\n\nthe login page is broken on Safari."
+    },
+    {
+      "id": "prose-full",
+      "description": "Sections appear in a fixed order, and empty ones are left out entirely.",
+      "profile": "prose",
+      "take": {
+        "title": "Retry the flaky uploader",
+        "lines": [
+          { "section": "intent", "text": "the uploader keeps dying on big files" },
+          { "section": "detail", "text": "it only happens over about fifty megs" },
+          { "section": "constraint", "text": "don't touch the generated files" },
+          { "section": "acceptance", "text": "I should be able to upload a two hundred meg video without it falling over" },
+          { "section": "open_question", "text": "is the timeout on our side or theirs" }
+        ],
+        "context": [
+          {
+            "referenceId": "pr-1",
+            "kind": "pull_request",
+            "identifier": "acme/web#412",
+            "title": "Chunked uploads",
+            "state": "open",
+            "url": "https://github.com/acme/web/pull/412",
+            "resolvedFrom": "the PR I just opened"
+          }
+        ]
+      },
+      "expect": "# Retry the flaky uploader\n\nthe uploader keeps dying on big files.\n\nit only happens over about fifty megs.\n\n**Constraints**\n- don't touch the generated files\n\n**Done when**\n- I should be able to upload a two hundred meg video without it falling over\n\n**Open questions**\n- is the timeout on our side or theirs\n\n**Context**\n- acme/web#412 \"Chunked uploads\" (open) — https://github.com/acme/web/pull/412 — referred to as \"the PR I just opened\""
+    },
+    {
+      "id": "prose-joins-sentences-in-a-section",
+      "description": "Several sentences in one section read as one paragraph, with punctuation supplied.",
+      "profile": "prose",
+      "take": {
+        "title": "Cache avatars",
+        "lines": [
+          { "section": "intent", "text": "cache the avatar images" },
+          { "section": "intent", "text": "the feed flickers every time you scroll" }
+        ]
+      },
+      "expect": "# Cache avatars\n\ncache the avatar images. the feed flickers every time you scroll."
+    },
+    {
+      "id": "structured",
+      "description": "The structured profile, for destinations that expect headings.",
+      "profile": "structured",
+      "take": {
+        "title": "Retry the flaky uploader",
+        "lines": [
+          { "section": "intent", "text": "the uploader keeps dying on big files" },
+          { "section": "detail", "text": "it only happens over about fifty megs" }
+        ]
+      },
+      "expect": "# Retry the flaky uploader\n\nthe uploader keeps dying on big files.\n\n## Details\n\n- it only happens over about fifty megs"
+    }
+  ]
+}

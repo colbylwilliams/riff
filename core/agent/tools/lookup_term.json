@@ -1,0 +1,33 @@
+{
+  "name": "lookup_term",
+  "kind": "host",
+  "description": "Find out what a term, acronym, codename, repo, service, or person refers to, and whether what you heard is the canonical spelling. Use this before asking them to repeat a word. Checks the learned lexicon first, then the host's glossary.",
+  "parameters": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["heard"],
+    "properties": {
+      "heard": {
+        "type": "string",
+        "description": "The term exactly as the transcriber produced it, including a wrong spelling."
+      },
+      "context": {
+        "type": "string",
+        "maxLength": 400,
+        "description": "The sentence it appeared in, so homonyms can be told apart."
+      },
+      "kind": {
+        "type": "string",
+        "enum": ["repository", "service", "product", "acronym", "person", "team", "file", "unknown"],
+        "default": "unknown"
+      }
+    }
+  },
+  "returns": {
+    "type": "object",
+    "description": "matches[] each with canonical, kind, definition, aliases, and confidence. High confidence means use the canonical form silently. Low confidence and a load-bearing term means ask.",
+    "properties": {
+      "matches": { "type": "array", "items": { "type": "object" } }
+    }
+  }
+}

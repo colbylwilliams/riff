@@ -1,0 +1,57 @@
+{
+  "name": "resolve_reference",
+  "kind": "host",
+  "description": "Turn something they pointed at into a real thing: 'the PR I just opened', 'that issue Priya filed', 'the doc from Monday', 'this repo', or a spoken URL. Call it as soon as you hear the reference. Returns candidates with ids you can attach to the draft.",
+  "parameters": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["phrase"],
+    "properties": {
+      "phrase": {
+        "type": "string",
+        "description": "The referring phrase as they said it, with the surrounding words that give it meaning."
+      },
+      "kind": {
+        "type": "string",
+        "enum": [
+          "pull_request",
+          "issue",
+          "commit",
+          "branch",
+          "repository",
+          "file",
+          "document",
+          "message",
+          "person",
+          "url",
+          "unknown"
+        ],
+        "default": "unknown",
+        "description": "What you think it is. Use unknown rather than guessing wrong."
+      },
+      "recency": {
+        "type": "string",
+        "enum": ["latest", "today", "this_week", "this_month", "any"],
+        "default": "any",
+        "description": "Time window implied by how they said it. 'the one I just opened' is latest."
+      },
+      "actor": {
+        "type": "string",
+        "description": "Who they attributed it to, if anyone. 'me' when they said they did it."
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 10,
+        "default": 5
+      }
+    }
+  },
+  "returns": {
+    "type": "object",
+    "description": "candidates[] each with reference_id, kind, title, identifier, url, timestamp, actor, and confidence. An empty list means ask.",
+    "properties": {
+      "candidates": { "type": "array", "items": { "type": "object" } }
+    }
+  }
+}
