@@ -1,5 +1,5 @@
 import type { CredentialProvider, RealtimeTransport } from "./transport.ts";
-import { encodeBase64 } from "./transport.ts";
+import { encodeBase64, endpointWithModel } from "./transport.ts";
 import { CLIENT_EVENTS } from "./events.ts";
 
 export interface WebSocketLike {
@@ -32,7 +32,7 @@ const OPEN = 1;
  */
 export async function connectWebSocket(options: WebSocketTransportOptions): Promise<RealtimeTransport> {
   const credentials = await options.credentials.get();
-  const url = `${options.url ?? DEFAULT_URL}?model=${encodeURIComponent(options.model)}`;
+  const url = endpointWithModel(options.url ?? DEFAULT_URL, options.model);
 
   const protocols = [
     "realtime",

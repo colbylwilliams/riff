@@ -92,3 +92,21 @@ export function decodeBase64(value: string): Uint8Array {
   }
   return bytes;
 }
+
+/**
+ * Adds the model to an endpoint without disturbing what is already there.
+ *
+ * Azure and gateway endpoints carry required parameters such as `api-version` and `deployment`.
+ * Appending `?model=` to those produces a second `?` and folds the model into the previous value,
+ * which fails in a way that looks like an auth problem.
+ */
+export function endpointWithModel(base: string, model: string): string {
+  try {
+    const url = new URL(base);
+    url.searchParams.set("model", model);
+    return url.toString();
+  } catch {
+    const separator = base.includes("?") ? "&" : "?";
+    return `${base}${separator}model=${encodeURIComponent(model)}`;
+  }
+}

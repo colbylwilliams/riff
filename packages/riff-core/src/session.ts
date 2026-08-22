@@ -139,7 +139,7 @@ export class RiffSession {
         references: this.#references,
         motifs: this.#motifs,
         now: this.#now,
-        provenance: this.#provenance(),
+        provenance: () => this.#provenance(),
         onLexiconChanged: () => {
           this.#connection?.updateSession({ vocabulary: this.#vocabulary() });
         },

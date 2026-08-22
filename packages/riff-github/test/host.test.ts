@@ -132,6 +132,21 @@ describe("GitHubHost", () => {
     assert.equal(calls.length, 0);
   });
 
+  it("reports failure when the named destination does not exist", async () => {
+    const { fetch, calls } = fakeGitHub({});
+    const host = new GitHubHost({
+      token: "t",
+      fetch,
+      destinations: [issueDestination({ repository: "acme/web", default: true })],
+    });
+
+    const result = await host.submitPrompt({ id: "a1", rendered: "# hi" } as never, { target: "backlog" });
+
+    assert.equal(result.submitted, false, "saying it was sent when it was not is worse than failing");
+    assert.match(result.message!, /no destination called "backlog"/);
+    assert.equal(calls.length, 0);
+  });
+
   it("opens an issue when that is the configured destination", async () => {
     const { fetch, calls } = fakeGitHub({
       "/repos/acme/web/issues": { number: 77, html_url: "https://github.com/acme/web/issues/77" },

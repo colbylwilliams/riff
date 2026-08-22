@@ -1,4 +1,5 @@
 import type { CredentialProvider, RealtimeTransport } from "./transport.ts";
+import { endpointWithModel } from "./transport.ts";
 
 /**
  * Minimal structural types for the WebRTC objects this transport touches, so the package compiles
@@ -85,7 +86,7 @@ export async function connectWebRTC(options: WebRTCTransportOptions): Promise<Re
   const offer = await peer.createOffer();
   await peer.setLocalDescription(offer);
 
-  const response = await fetch(`${options.url ?? DEFAULT_URL}?model=${encodeURIComponent(options.model)}`, {
+  const response = await fetch(endpointWithModel(options.url ?? DEFAULT_URL, options.model), {
     method: "POST",
     body: offer.sdp ?? "",
     headers: {

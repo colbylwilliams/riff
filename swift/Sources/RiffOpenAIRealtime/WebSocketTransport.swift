@@ -34,20 +34,32 @@ public final class WebSocketTransport: RiffTransport, @unchecked Sendable {
         onClose: @escaping @Sendable (String?) -> Void,
         onError: @escaping @Sendable (Error) -> Void
     ) {
-        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
-        components.queryItems = [URLQueryItem(name: "model", value: model)]
+        self.task = urlSession.webSocketTask(with: WebSocketTransport.request(url: url, model: model, protocols: {
+            var protocols = ["realtime", "openai-insecure-api-key.\(token)"]
+            if let organization { protocols.append("openai-organization.\(organization)") }
+            if let project { protocols.append("openai-project.\(project)") }
+            return protocols
+        }()))
 
-        var protocols = ["realtime", "openai-insecure-api-key.\(token)"]
-        if let organization { protocols.append("openai-organization.\(organization)") }
-        if let project { protocols.append("openai-project.\(project)") }
-
-        var request = URLRequest(url: components.url!)
-        request.setValue(protocols.joined(separator: ", "), forHTTPHeaderField: "Sec-WebSocket-Protocol")
-
-        self.task = urlSession.webSocketTask(with: request)
         self.onMessage = onMessage
         self.onClose = onClose
         self.onError = onError
+    }
+
+    /// Adds the model without disturbing parameters the caller's endpoint already carries.
+    ///
+    /// Azure and gateway endpoints require parameters such as `api-version` and `deployment`.
+    /// Replacing the query wholesale drops them, which fails in a way that looks like an auth error.
+    static func request(url: URL, model: String, protocols: [String]) -> URLRequest {
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        var items = components?.queryItems ?? []
+        items.removeAll { $0.name == "model" }
+        items.append(URLQueryItem(name: "model", value: model))
+        components?.queryItems = items
+
+        var request = URLRequest(url: components?.url ?? url)
+        request.setValue(protocols.joined(separator: ", "), forHTTPHeaderField: "Sec-WebSocket-Protocol")
+        return request
     }
 
     public func resume() {

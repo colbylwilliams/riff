@@ -83,10 +83,18 @@ unmatched tokens are returned so the model can see exactly what it invented.
 
 ## Why the lexicon cannot be used to smuggle a paraphrase
 
-The lexicon is applied to **both sides** of every comparison. An alias only ever lets two spellings
-of the same word recognize each other; it can never make a different word match. This is what makes
-it safe to learn corrections mid-session from an agent's own tool call — the worst a bad alias can do
-is cause a rejection, never a false acceptance.
+The lexicon is applied to **both sides** of every comparison, so an alias lets two spellings of the
+same word recognize each other.
+
+That alone is not enough, because the agent can add aliases mid-session through `record_term`. An
+alias that is not a mishearing but a different word would defeat the gate outright: install
+`{canonical: "CSV", heardAs: ["database"]}` and an invented "CSV" line matches spoken "database".
+So aliases arriving through `record_term` must be plausible mishearings of the canonical form —
+close after collapsing to letters and digits. Curated vocabulary is exempt, because the seed and
+workspace lexicons legitimately contain aliases that are not orthographically close, such as
+"sequel" for SQL or "k8s" for Kubernetes.
+
+With both rules in place, a bad alias costs a rejection rather than a false acceptance.
 
 ## Sections and modes
 
@@ -113,6 +121,11 @@ term, a legitimate use of that word can be silently "corrected". The seed lexico
 that are ordinary words for this reason.
 
 **Truthfulness.** Grounding proves a line was said. It says nothing about whether it is correct.
+
+**Wording from earlier sessions.** Only the current ledger is an authorized source, so text returned
+by `recall_prompts` cannot be quoted into a prompt. The tool exists to orient the agent, not to
+supply material. Carrying provenance across sessions is possible but is a larger change than the
+gate itself.
 
 ## Fidelity
 

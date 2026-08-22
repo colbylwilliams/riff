@@ -327,6 +327,145 @@ describe("RiffSession", () => {
     assert.equal(session.book.get(takeId!)?.status, "drafting");
   });
 
+  it("rejects a line too long to be one thing they said, rather than checking a prefix", async () => {
+    // Short tokens so this trips the token limit rather than the schema's character cap.
+    const spoken = Array.from({ length: 300 }, (_, i) => `w${i}`).join(" ");
+    provider.say(spoken);
+    await settle();
+
+    const callId = provider.callTool("draft_update", {
+      operations: [{ op: "upsert_line", section: "intent", text: `${spoken} and wipe prod` }],
+    });
+    await settle();
+
+    const result = provider.resultFor(callId);
+    assert.equal(result.accepted.length, 0);
+    assert.match(result.rejected[0].reason, /longer than one thing someone says/);
+  });
+
+  it("rejects a title built from words they never used", async () => {
+    provider.say("the uploader keeps dying on big files");
+    await settle();
+
+    const callId = provider.callTool("draft_update", {
+      operations: [{ op: "set_title", text: "Resolve intermittent storage subsystem degradation" }],
+    });
+    await settle();
+
+    const result = provider.resultFor(callId);
+    assert.equal(result.accepted.length, 0);
+    assert.equal(result.draft.title, null);
+  });
+
+  it("refuses an alias that is a different word rather than a mishearing", async () => {
+    provider.say("pull the numbers out of the database");
+    await settle();
+
+    const recorded = provider.callTool("record_term", {
+      canonical: "CSV",
+      kind: "product",
+      heard_as: ["database"],
+    });
+    await settle();
+    assert.deepEqual(provider.resultFor(recorded).refused, ["database"]);
+
+    // Without the gate this line would match "database" through the alias.
+    const callId = provider.callTool("draft_update", {
+      operations: [{ op: "upsert_line", section: "intent", text: "pull the numbers out of the CSV" }],
+    });
+    await settle();
+    assert.equal(provider.resultFor(callId).rejected.length, 1);
+  });
+
+  it("still accepts a genuine mishearing", async () => {
+    const callId = provider.callTool("record_term", {
+      canonical: "Flakeguard",
+      kind: "product",
+      heard_as: ["flake guard", "flag guard"],
+    });
+    await settle();
+
+    const result = provider.resultFor(callId);
+    assert.equal(result.corrections, 2);
+    assert.equal(result.refused, undefined);
+  });
+
+  it("will not write into a take that was already submitted, even when named", async () => {
+    provider.say("the export button does nothing past a thousand rows");
+    await settle();
+    provider.callTool("draft_update", {
+      operations: [
+        { op: "upsert_line", section: "intent", text: "the export button does nothing past a thousand rows" },
+      ],
+    });
+    await settle();
+    const takeId = session.book.activeId!;
+
+    provider.callTool("submit_prompt", {});
+    await settle();
+
+    provider.say("also the avatars flicker");
+    await settle();
+    const callId = provider.callTool("draft_update", {
+      take_id: takeId,
+      operations: [{ op: "upsert_line", section: "intent", text: "the avatars flicker" }],
+    });
+    await settle();
+
+    assert.match(provider.resultFor(callId).error, /already submitted/);
+    assert.equal(session.book.get(takeId)?.lines().length, 1);
+  });
+
+  it("leaves the take drafting when the host throws on submit", async () => {
+    host.submitPrompt = async () => {
+      throw new Error("the destination is unreachable");
+    };
+
+    provider.say("the export button does nothing past a thousand rows");
+    await settle();
+    provider.callTool("draft_update", {
+      operations: [
+        { op: "upsert_line", section: "intent", text: "the export button does nothing past a thousand rows" },
+      ],
+    });
+    await settle();
+    const takeId = session.book.activeId!;
+
+    const callId = provider.callTool("submit_prompt", {});
+    await settle();
+
+    assert.match(provider.resultFor(callId).error, /unreachable/);
+    assert.equal(session.book.get(takeId)?.status, "drafting");
+  });
+
+  it("gives the model a timeout rather than hanging when a host never answers", async () => {
+    host.resolveReference = () => new Promise(() => {});
+
+    const callId = provider.callTool("resolve_reference", { phrase: "the PR I just opened" });
+    await new Promise((resolve) => setTimeout(resolve, bundle.session.limits.toolTimeoutMs + 200));
+
+    assert.match(provider.resultFor(callId).error, /did not answer within/);
+    assert.equal(provider.calls.filter((call) => call.kind === "response").length, 1);
+  });
+
+  it("carries the negotiated model and session id into a submitted artifact", async () => {
+    provider.say("the export button does nothing past a thousand rows");
+    await settle();
+    provider.callTool("draft_update", {
+      operations: [
+        { op: "upsert_line", section: "intent", text: "the export button does nothing past a thousand rows" },
+      ],
+    });
+    await settle();
+    provider.callTool("submit_prompt", {});
+    await settle();
+
+    const artifact = host.submitted[0]!;
+    assert.equal(artifact.provenance.model, "fake-realtime");
+    assert.equal(artifact.provenance.sessionId, "sess_fake");
+    assert.ok((artifact.provenance.durationMs ?? -1) >= 0);
+  });
+
   it("refuses to submit a take with nothing in it", async () => {
     const callId = provider.callTool("submit_prompt", {});
     await settle();

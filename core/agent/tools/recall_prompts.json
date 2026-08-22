@@ -1,11 +1,13 @@
 {
   "name": "recall_prompts",
   "kind": "host",
-  "description": "Search prompts they have written before. Use it when they refer back to an earlier request ('like the one I did for the auth service'), when you need the outcome of a previous prompt, or when you need to know how they normally phrase this kind of thing. Their old wording is a legitimate source of their words.",
+  "description": "Search prompts they have written before. Use it when they refer back to an earlier request ('like the one I did for the auth service'), when you need the outcome of a previous prompt, or to orient yourself in what they are asking for now. What comes back is background for you and cannot go into the prompt: only what they say in this session can. If an earlier line is what they want, ask them and let them say it.",
   "parameters": {
     "type": "object",
     "additionalProperties": false,
-    "required": ["query"],
+    "required": [
+      "query"
+    ],
     "properties": {
       "query": {
         "type": "string",
@@ -13,12 +15,22 @@
       },
       "recency": {
         "type": "string",
-        "enum": ["latest", "today", "this_week", "this_month", "any"],
+        "enum": [
+          "latest",
+          "today",
+          "this_week",
+          "this_month",
+          "any"
+        ],
         "default": "any"
       },
       "status": {
         "type": "string",
-        "enum": ["any", "submitted", "parked"],
+        "enum": [
+          "any",
+          "submitted",
+          "parked"
+        ],
         "default": "any"
       },
       "limit": {
@@ -33,7 +45,12 @@
     "type": "object",
     "description": "prompts[] each with prompt_id, title, submitted_at, status, an excerpt, and any recorded outcome.",
     "properties": {
-      "prompts": { "type": "array", "items": { "type": "object" } }
+      "prompts": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      }
     }
   }
 }

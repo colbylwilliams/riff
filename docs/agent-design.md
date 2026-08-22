@@ -127,7 +127,7 @@ so related operations are folded into one tool with an `action` rather than spli
 | `resolve_reference` | host | "The PR I just opened" → an identifier and a URL |
 | `lookup_term` | host | What a term means here, and how it is spelled |
 | `record_term` | local | Teach the lexicon a correction so it is right next time |
-| `recall_prompts` | host | Earlier prompts, including their wording |
+| `recall_prompts` | host | Earlier prompts, as background. Recalled text is not quotable |
 | `motifs` | local | List, attach, detach, save, retire standing instructions |
 | `takes` | local | New, switch, park, list, discard drafts |
 | `submit_prompt` | host | Hand the finished prompt to whatever does the work |

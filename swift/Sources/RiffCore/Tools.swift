@@ -34,7 +34,9 @@ public final class ToolRuntime {
     /// References resolved this session, so the agent can attach one by id later.
     public var references: [String: ContextItem] = [:]
     public var motifs: [String: Motif] = [:]
-    public var provenance: PromptArtifact.Provenance?
+    /// Read when an artifact is built rather than stored, so a prompt submitted mid-session carries
+    /// the negotiated model, session id, and duration instead of whatever was known before connecting.
+    public var provenance: (() -> PromptArtifact.Provenance)?
 
     var onLexiconChanged: (() -> Void)?
     var onDraftChanged: ((Take) -> Void)?
@@ -98,13 +100,34 @@ public final class ToolRegistry {
         }
 
         do {
-            return finish(true, try await run(name: name, args: validated.value))
+            // A host that never returns would otherwise hold the whole batch open and the single
+            // continuation the model is waiting for would never be requested.
+            let timeoutMs = runtime.bundle.session.limits.toolTimeoutMs
+            return finish(true, try await run(name: name, args: validated.value, timeoutMs: timeoutMs))
         } catch {
             return finish(false, json([("error", .string(String(describing: error)))]))
         }
     }
 
     // MARK: - Handlers
+
+    /// Bounds a tool call. A timeout is a result the model can act on; silence is not.
+    private func run(name: String, args: JSONValue, timeoutMs: Int) async throws -> JSONValue {
+        guard timeoutMs > 0 else { return try await run(name: name, args: args) }
+
+        return try await withThrowingTaskGroup(of: JSONValue.self) { group in
+            group.addTask { try await self.run(name: name, args: args) }
+            group.addTask {
+                try await Task.sleep(for: .milliseconds(timeoutMs))
+                throw RiffError.tool("\(name) did not answer within \(timeoutMs)ms; tell them it is not responding")
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else {
+                throw RiffError.tool("\(name) produced no result")
+            }
+            return first
+        }
+    }
 
     private func run(name: String, args: JSONValue) async throws -> JSONValue {
         switch name {
@@ -127,6 +150,16 @@ public final class ToolRegistry {
             return take
         }
         return try runtime.book.active()
+    }
+
+    /// A take that has been sent or thrown away is finished, and naming it explicitly does not
+    /// reopen it. Without this, later speech could still be written into a prompt already sent.
+    private func openTake(from args: JSONValue) throws -> Take {
+        let take = try take(from: args)
+        guard take.status != .submitted, take.status != .discarded else {
+            throw RiffError.tool("take \"\(take.id)\" was already \(take.status.rawValue); start a new one for anything further")
+        }
+        return take
     }
 
     /// Compact view of the draft returned after every mutation, so the agent always knows line ids.
@@ -181,7 +214,7 @@ public final class ToolRegistry {
     }
 
     private func draftUpdate(_ args: JSONValue) throws -> JSONValue {
-        let take = try take(from: args)
+        let take = try openTake(from: args)
         let operations = (args["operations"]?.arrayValue ?? []).compactMap(parseOperation)
 
         let (accepted, rejected) = applyDraftOperations(
@@ -312,15 +345,22 @@ public final class ToolRegistry {
 
     private func recordTerm(_ args: JSONValue) async throws -> JSONValue {
         let scope = args["scope"]?.stringValue ?? "user"
-        let heardAs = args["heard_as"]?.arrayValue?.compactMap(\.stringValue)
+        let canonical = RiffText.tidyWhitespace(args["canonical"]?.stringValue ?? "")
+        guard !canonical.isEmpty else { throw RiffError.tool("record_term needs a canonical spelling") }
+
+        // An alias is applied to both sides of every grounding comparison, so one that is not
+        // actually a mishearing would let an invented word match a different spoken word.
+        let proposed = args["heard_as"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        let accepted = proposed.filter { isPlausibleMishearing($0, canonical) }
+        let refused = proposed.filter { !accepted.contains($0) }
+
         let term = LexiconTerm(
-            canonical: RiffText.tidyWhitespace(args["canonical"]?.stringValue ?? ""),
+            canonical: canonical,
             kind: args["kind"]?.stringValue ?? "other",
-            heardAs: (heardAs?.isEmpty ?? true) ? nil : heardAs,
+            heardAs: accepted.isEmpty ? nil : accepted,
             definition: args["definition"]?.stringValue,
             scope: scope
         )
-        guard !term.canonical.isEmpty else { throw RiffError.tool("record_term needs a canonical spelling") }
 
         runtime.lexicon.add(term)
         runtime.ledger.invalidate()
@@ -329,7 +369,9 @@ public final class ToolRegistry {
 
         return json([
             ("recorded", .string(term.canonical)),
-            ("corrections", .number(Double(term.heardAs?.count ?? 0))),
+            ("corrections", .number(Double(accepted.count))),
+            ("refused", refused.isEmpty ? nil : .array(refused.map { .string($0) })),
+            ("reason", refused.isEmpty ? nil : .string("a correction has to be a mishearing of the same word; those are different words, so record the term without them")),
         ])
     }
 
@@ -505,7 +547,7 @@ public final class ToolRegistry {
     }
 
     private func submitPrompt(_ args: JSONValue) async throws -> JSONValue {
-        let take = try take(from: args)
+        let take = try openTake(from: args)
         let policy = runtime.bundle.policy
 
         guard take.isReady(policy: policy) else {
@@ -529,13 +571,21 @@ public final class ToolRegistry {
             lexicon: runtime.lexicon,
             utteranceCount: runtime.ledger.count,
             now: runtime.now(),
-            provenance: runtime.provenance
+            provenance: runtime.provenance?()
         ))
 
-        let result = try await runtime.host.submitPrompt(
-            artifact,
-            options: SubmitOptions(target: target, keepOpen: keepOpen)
-        )
+        let result: SubmitResult
+        do {
+            result = try await runtime.host.submitPrompt(
+                artifact,
+                options: SubmitOptions(target: target, keepOpen: keepOpen)
+            )
+        } catch {
+            // The registry turns this into a tool error, so the status has to be put back here or
+            // the take stays `.ready` for a submission that never happened.
+            take.status = .drafting
+            throw error
+        }
 
         if result.submitted {
             take.status = keepOpen ? .drafting : .submitted
@@ -560,3 +610,4 @@ public final class ToolRegistry {
         ])
     }
 }
+

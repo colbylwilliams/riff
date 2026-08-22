@@ -180,3 +180,45 @@ public func compareByCodePoint(_ a: String, _ b: String) -> Int {
     let folded = compare(a.lowercased(), b.lowercased())
     return folded != 0 ? folded : compare(a, b)
 }
+
+private let mishearingSimilarity = 0.6
+
+/// Whether a surface form is plausibly a mishearing of a term, rather than a different word.
+///
+/// This gates the model-callable `record_term`, and it is what keeps the lexicon from being a hole
+/// in the fidelity gate. Aliases are applied to both sides of a grounding comparison, so an alias
+/// normally cannot make a paraphrase match — but only because it maps two spellings of the *same*
+/// word. An agent that could install `{canonical: "CSV", heardAs: ["database"]}` would make an
+/// invented "CSV" line match spoken "database", and the gate would pass it.
+///
+/// Curated vocabulary is exempt: the seed and workspace lexicons legitimately contain aliases that
+/// are not orthographically close, such as "sequel" for SQL or "k8s" for Kubernetes.
+public func isPlausibleMishearing(_ heard: String, _ canonical: String) -> Bool {
+    func collapse(_ value: String) -> String {
+        RiffText.tokenize(value).joined().filter { $0.isLetter || $0.isNumber }
+    }
+
+    let a = collapse(heard)
+    let b = collapse(canonical)
+    guard a.count >= 2, b.count >= 2 else { return false }
+    if a == b { return true }
+
+    let distance = editDistance(Array(a), Array(b))
+    return 1 - Double(distance) / Double(max(a.count, b.count)) >= mishearingSimilarity
+}
+
+private func editDistance(_ a: [Character], _ b: [Character]) -> Int {
+    var previous = Array(0...b.count)
+    for i in 1...max(a.count, 1) where !a.isEmpty {
+        var current = [i]
+        for j in 1...max(b.count, 1) where !b.isEmpty {
+            current.append(min(
+                previous[j] + 1,
+                current[j - 1] + 1,
+                previous[j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1)
+            ))
+        }
+        previous = current
+    }
+    return previous[b.count]
+}

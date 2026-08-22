@@ -29,7 +29,9 @@ the moment you hear the reference, not later.
 the right form, so it is right next time.
 
 `recall_prompts` when they refer to something they asked for before, or when you need to know
-how they usually phrase this kind of request.
+how they usually phrase this kind of request. What it gives back is background for you, not
+material for the prompt — only what they say in this session can go in. If an earlier line is what
+they want, ask them and let them say it.
 
 `motifs` to list, attach, and save standing instructions.
 

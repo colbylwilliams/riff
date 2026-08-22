@@ -227,13 +227,20 @@ function applySetTitle(take: Take, operation: DraftOperation, ctx: ApplyContext)
   if (!text) return { op: "set_title", status: "rejected", reason: "set_title needs text" };
 
   const result = ctx.checker.checkTitle(text, ctx.spans);
-  take.title = { text, origin: result.ok ? "spoken" : "derived" };
-  return {
-    op: "set_title",
-    status: "accepted",
-    ratio: result.ratio,
-    kind: take.title.origin === "spoken" ? result.kind : "derived",
-  };
+  if (!result.ok) {
+    // A title is held to a looser bar than a body line, but it may still only use words they used.
+    // Accepting it as `derived` here would make the looser bar no bar at all.
+    return {
+      op: "set_title",
+      status: "rejected",
+      reason: result.reason ?? rejectionReason(result.unmatchedTokens, ctx.spans),
+      ratio: result.ratio,
+      unmatchedTokens: result.unmatchedTokens,
+    };
+  }
+
+  take.title = { text, origin: "spoken" };
+  return { op: "set_title", status: "accepted", ratio: result.ratio, kind: result.kind };
 }
 
 function applyUpsertLine(take: Take, operation: DraftOperation, ctx: ApplyContext): DraftOperationOutcome {
@@ -266,7 +273,7 @@ function applyUpsertLine(take: Take, operation: DraftOperation, ctx: ApplyContex
         op: "upsert_line",
         lineId: operation.line_id,
         status: "rejected",
-        reason: rejectionReason(result.unmatchedTokens, ctx.spans),
+        reason: result.reason ?? rejectionReason(result.unmatchedTokens, ctx.spans),
         ratio: result.ratio,
         unmatchedTokens: result.unmatchedTokens,
         closestSource: closestSourceText(ctx.spans, result.sourceUtteranceIds),

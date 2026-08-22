@@ -6,6 +6,7 @@ import type { GroundingChecker } from "./grounding.ts";
 import type { DraftOperation } from "./draft.ts";
 import { DraftBook, Take, applyDraftOperations, isReady } from "./draft.ts";
 import { buildArtifact, renderPrompt, summarizeDraft } from "./render.ts";
+import { isPlausibleMishearing } from "./lexicon.ts";
 import { validate } from "./schema.ts";
 import { tidyWhitespace } from "./text.ts";
 
@@ -34,7 +35,11 @@ export interface ToolRuntime extends ToolRuntimeEvents {
   references: Map<string, ContextItem>;
   motifs: Map<string, Motif>;
   now(): string;
-  provenance?: Partial<PromptArtifact["provenance"]>;
+  /**
+   * Read when an artifact is built rather than stored, so a prompt submitted mid-session carries
+   * the negotiated model, session id, and duration instead of whatever was known before connecting.
+   */
+  provenance?: () => Partial<PromptArtifact["provenance"]>;
 }
 
 export interface ToolRegistry {
@@ -43,6 +48,26 @@ export interface ToolRegistry {
 }
 
 type Handler = (args: any, runtime: ToolRuntime) => Promise<unknown> | unknown;
+
+/**
+ * Bounds a tool call. A host that never returns would otherwise hold the whole batch open, and the
+ * single continuation the model is waiting for would never be requested — the conversation just
+ * stops. A timeout is a result the model can act on; silence is not.
+ */
+function withToolTimeout<T>(work: Promise<T>, timeoutMs: number, name: string): Promise<T> {
+  if (!(timeoutMs > 0)) return work;
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${name} did not answer within ${timeoutMs}ms; tell them it is not responding`)),
+      timeoutMs,
+    );
+    timer.unref?.();
+    work.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
 
 export function createToolRegistry(runtime: ToolRuntime): ToolRegistry {
   const byName = new Map(runtime.bundle.tools.map((tool) => [tool.name, tool] as const));
@@ -81,7 +106,13 @@ export function createToolRegistry(runtime: ToolRuntime): ToolRegistry {
       }
 
       try {
-        return finish(true, (await handler(validated.value, runtime)) ?? { ok: true });
+        const timeoutMs = runtime.bundle.session.limits.toolTimeoutMs;
+        const outcome = await withToolTimeout(
+          Promise.resolve(handler(validated.value, runtime)),
+          timeoutMs,
+          name,
+        );
+        return finish(true, outcome ?? { ok: true });
       } catch (error) {
         return finish(false, { error: (error as Error).message });
       }
@@ -93,6 +124,19 @@ function resolveTake(runtime: ToolRuntime, takeId?: string): Take {
   if (!takeId) return runtime.book.active();
   const take = runtime.book.get(takeId);
   if (!take) throw new Error(`no take "${takeId}"`);
+  return take;
+}
+
+/**
+ * A take that has been sent or thrown away is finished, and naming it explicitly does not reopen it.
+ * Without this, later speech could still be written into a prompt that has already gone out.
+ */
+function requireOpen(take: Take): Take {
+  if (take.status === "submitted" || take.status === "discarded") {
+    throw new Error(
+      `take "${take.id}" was already ${take.status}; start a new one for anything further`,
+    );
+  }
   return take;
 }
 
@@ -128,7 +172,7 @@ function fidelityOf(take: Take, runtime: ToolRuntime): number {
 
 const HANDLERS: Record<string, Handler> = {
   draft_update(args: { take_id?: string; operations: DraftOperation[] }, runtime) {
-    const take = resolveTake(runtime, args.take_id);
+    const take = requireOpen(resolveTake(runtime, args.take_id));
     const { accepted, rejected } = applyDraftOperations(take, args.operations, {
       checker: runtime.checker,
       spans: runtime.ledger.spans(),
@@ -221,10 +265,19 @@ const HANDLERS: Record<string, Handler> = {
     args: { canonical: string; kind: string; heard_as?: string[]; definition?: string; scope?: string },
     runtime,
   ) {
+    const canonical = tidyWhitespace(args.canonical);
+    if (!canonical) throw new Error("record_term needs a canonical spelling");
+
+    // An alias is applied to both sides of every grounding comparison, so one that is not actually a
+    // mishearing would let an invented word match a different spoken word.
+    const proposed = args.heard_as ?? [];
+    const accepted = proposed.filter((heard) => isPlausibleMishearing(heard, canonical));
+    const refused = proposed.filter((heard) => !accepted.includes(heard));
+
     const term = {
-      canonical: tidyWhitespace(args.canonical),
+      canonical,
       kind: args.kind,
-      ...(args.heard_as?.length ? { heardAs: args.heard_as } : {}),
+      ...(accepted.length > 0 ? { heardAs: accepted } : {}),
       ...(args.definition ? { definition: args.definition } : {}),
       scope: (args.scope ?? "user") as "session" | "user" | "workspace",
     };
@@ -234,7 +287,17 @@ const HANDLERS: Record<string, Handler> = {
     if (term.scope !== "session") await runtime.store.saveTerm(term);
     runtime.onLexiconChanged?.();
 
-    return { recorded: term.canonical, corrections: term.heardAs?.length ?? 0 };
+    return {
+      recorded: term.canonical,
+      corrections: accepted.length,
+      ...(refused.length > 0
+        ? {
+            refused,
+            reason:
+              "a correction has to be a mishearing of the same word; those are different words, so record the term without them",
+          }
+        : {}),
+    };
   },
 
   async recall_prompts(args: { query: string; recency?: string; status?: string; limit?: number }, runtime) {
@@ -395,7 +458,7 @@ const HANDLERS: Record<string, Handler> = {
   },
 
   async submit_prompt(args: { take_id?: string; target?: string; keep_open?: boolean }, runtime) {
-    const take = resolveTake(runtime, args.take_id);
+    const take = requireOpen(resolveTake(runtime, args.take_id));
 
     if (!isReady(take, runtime.bundle.policy)) {
       const missing = runtime.bundle.policy.readinessRequires.filter(
@@ -415,13 +478,21 @@ const HANDLERS: Record<string, Handler> = {
       lexicon: runtime.lexicon,
       utteranceCount: runtime.ledger.size,
       now: runtime.now(),
-      ...(runtime.provenance ? { provenance: runtime.provenance } : {}),
+      ...(runtime.provenance ? { provenance: runtime.provenance() } : {}),
     });
 
-    const result = await runtime.host.submitPrompt(artifact, {
-      ...(args.target ? { target: args.target } : {}),
-      ...(args.keep_open ? { keepOpen: args.keep_open } : {}),
-    });
+    let result: Awaited<ReturnType<typeof runtime.host.submitPrompt>>;
+    try {
+      result = await runtime.host.submitPrompt(artifact, {
+        ...(args.target ? { target: args.target } : {}),
+        ...(args.keep_open ? { keepOpen: args.keep_open } : {}),
+      });
+    } catch (error) {
+      // The registry turns this into a tool error, so the status has to be put back here or the
+      // take stays `ready` for a submission that never happened.
+      take.status = "drafting";
+      throw error;
+    }
 
     if (result.submitted) {
       take.status = args.keep_open ? "drafting" : "submitted";

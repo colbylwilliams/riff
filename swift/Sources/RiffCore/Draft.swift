@@ -312,13 +312,20 @@ private func applySetTitle(_ take: Take, _ operation: DraftOperation, _ context:
         return DraftOperationOutcome(op: "set_title", accepted: false, reason: "set_title needs text")
     }
     let result = context.checker.checkTitle(text, against: context.spans)
-    take.title = (text, result.ok ? "spoken" : "derived")
-    return DraftOperationOutcome(
-        op: "set_title",
-        accepted: true,
-        ratio: result.ratio,
-        kind: result.ok ? result.kind : .derived
-    )
+    guard result.ok else {
+        // A title is held to a looser bar than a body line, but it may still only use words they
+        // used. Accepting it as `derived` here would make the looser bar no bar at all.
+        return DraftOperationOutcome(
+            op: "set_title",
+            accepted: false,
+            reason: result.reason ?? rejectionReason(result.unmatchedTokens, context.spans),
+            ratio: result.ratio,
+            unmatchedTokens: result.unmatchedTokens
+        )
+    }
+
+    take.title = (text, "spoken")
+    return DraftOperationOutcome(op: "set_title", accepted: true, ratio: result.ratio, kind: result.kind)
 }
 
 private func applyUpsert(_ take: Take, _ operation: DraftOperation, _ context: ApplyContext) -> DraftOperationOutcome {
@@ -353,7 +360,7 @@ private func applyUpsert(_ take: Take, _ operation: DraftOperation, _ context: A
                 op: "upsert_line",
                 lineId: operation.lineId,
                 accepted: false,
-                reason: rejectionReason(result.unmatchedTokens, context.spans),
+                reason: result.reason ?? rejectionReason(result.unmatchedTokens, context.spans),
                 ratio: result.ratio,
                 unmatchedTokens: result.unmatchedTokens,
                 closestSource: closestSource(context.spans, result.sourceUtteranceIds)

@@ -6,7 +6,7 @@ import { describe, it } from "node:test";
 import type { AgentBundle, ProviderEvent } from "@riff/core";
 import { loadBundle } from "@riff/core";
 import { OpenAIRealtimeProvider } from "../src/provider.ts";
-import { apiKeyCredentials, clientSecretCredentials } from "../src/transport.ts";
+import { apiKeyCredentials, clientSecretCredentials, endpointWithModel } from "../src/transport.ts";
 import { mintClientSecret } from "../src/client-secret.ts";
 import type { WebSocketLike } from "../src/websocket-transport.ts";
 
@@ -244,5 +244,21 @@ describe("client secrets", () => {
     await credentials.get();
     await credentials.get();
     assert.equal(mints, 2);
+  });
+});
+
+describe("endpoint construction", () => {
+  it("preserves query parameters a custom endpoint already carries", () => {
+    const azure = "wss://acme.openai.azure.com/openai/realtime?api-version=2026-01-01&deployment=riff";
+    const built = new URL(endpointWithModel(azure, "gpt-realtime-2.1"));
+
+    assert.equal(built.searchParams.get("api-version"), "2026-01-01");
+    assert.equal(built.searchParams.get("deployment"), "riff");
+    assert.equal(built.searchParams.get("model"), "gpt-realtime-2.1");
+  });
+
+  it("replaces a model already present rather than adding a second one", () => {
+    const built = new URL(endpointWithModel("wss://api.openai.com/v1/realtime?model=old", "new"));
+    assert.deepEqual(built.searchParams.getAll("model"), ["new"]);
   });
 });

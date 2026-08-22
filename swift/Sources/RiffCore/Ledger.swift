@@ -20,6 +20,8 @@ public final class UtteranceLedger: @unchecked Sendable {
     private var byId: [String: Int] = [:]
     private var sequence = 0
     private var cachedSpans: [SourceSpan]?
+    /// Bumped by every change, so a span computation that raced one is discarded rather than cached.
+    private var generation = 0
     private let lexicon: Lexicon
     private let windowSize: Int
     private let redact: Bool
@@ -45,6 +47,7 @@ public final class UtteranceLedger: @unchecked Sendable {
         byId[utterance.id] = utterances.count
         utterances.append(utterance)
         cachedSpans = nil
+        generation += 1
         return utterance
     }
 
@@ -55,6 +58,7 @@ public final class UtteranceLedger: @unchecked Sendable {
         guard let index = byId[id] else { return nil }
         utterances[index].text = RiffText.tidyWhitespace(redact ? redactSecrets(text) : text)
         cachedSpans = nil
+        generation += 1
         return utterances[index]
     }
 
@@ -67,6 +71,7 @@ public final class UtteranceLedger: @unchecked Sendable {
     public func invalidate() {
         lock.lock(); defer { lock.unlock() }
         cachedSpans = nil
+        generation += 1
     }
 
     /// Every window of up to `windowSize` consecutive utterances, longest first. Windows exist
@@ -76,6 +81,7 @@ public final class UtteranceLedger: @unchecked Sendable {
         lock.lock()
         if let cachedSpans { lock.unlock(); return cachedSpans }
         let snapshot = utterances
+        let computedAt = generation
         lock.unlock()
 
         var tokenCache: [String: (tokens: [String], rawTokens: [String])] = [:]
@@ -114,7 +120,9 @@ public final class UtteranceLedger: @unchecked Sendable {
         }
 
         lock.lock()
-        cachedSpans = spans
+        // Only cache if nothing changed while this ran. Caching unconditionally would let an older
+        // snapshot overwrite a fresh invalidation, so newly spoken words would fail grounding.
+        if generation == computedAt { cachedSpans = spans }
         lock.unlock()
         return spans
     }

@@ -159,6 +159,51 @@ export function termKey(value: string): string {
 }
 
 /**
+ * Whether a surface form is plausibly a mishearing of a term, rather than a different word.
+ *
+ * This gates the model-callable `record_term`, and it is what keeps the lexicon from being a hole
+ * in the fidelity gate. Aliases are applied to both sides of a grounding comparison, so an alias
+ * normally cannot make a paraphrase match — but only because it maps two spellings of the *same*
+ * word. An agent that could install `{canonical: "CSV", heardAs: ["database"]}` would make an
+ * invented "CSV" line match spoken "database", and the gate would pass it.
+ *
+ * Curated vocabulary is exempt: the seed and workspace lexicons legitimately contain aliases that
+ * are not orthographically close, such as "sequel" for SQL or "k8s" for Kubernetes.
+ */
+export function isPlausibleMishearing(heard: string, canonical: string): boolean {
+  const collapse = (value: string): string =>
+    tokenize(value)
+      .map((t) => t.norm)
+      .join("")
+      .replace(/[^\p{L}\p{N}]/gu, "");
+
+  const a = collapse(heard);
+  const b = collapse(canonical);
+  if (a.length < 2 || b.length < 2) return false;
+  if (a === b) return true;
+
+  return 1 - editDistance(a, b) / Math.max(a.length, b.length) >= MISHEARING_SIMILARITY;
+}
+
+const MISHEARING_SIMILARITY = 0.6;
+
+function editDistance(a: string, b: string): number {
+  let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j++) {
+      current[j] = Math.min(
+        (previous[j] ?? 0) + 1,
+        (current[j - 1] ?? 0) + 1,
+        (previous[j - 1] ?? 0) + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+    }
+    previous = current;
+  }
+  return previous[b.length] ?? Math.max(a.length, b.length);
+}
+
+/**
  * How strongly a term should be biased toward during transcription. Terms with recorded
  * mishearings, acronym shapes, and multi-word names are the ones recognizers actually get wrong;
  * workspace vocabulary outranks general vocabulary because it is what this speaker will say.

@@ -148,9 +148,23 @@ export class GitHubHost implements RiffHost {
 
   async submitPrompt(artifact: PromptArtifact, options: SubmitOptions): Promise<SubmitResult> {
     const destinations = this.#options.destinations ?? [];
-    const destination = options.target
-      ? destinations.find((candidate) => candidate.id === options.target)
-      : (destinations.find((candidate) => candidate.default) ?? destinations[0]);
+
+    if (options.target) {
+      const named = destinations.find((candidate) => candidate.id === options.target);
+      if (!named) {
+        // Reporting success here would tell the speaker their prompt was sent somewhere it was not.
+        return {
+          submitted: false,
+          promptId: artifact.id,
+          message: `there is no destination called "${options.target}"; the ones configured are ${
+            destinations.length > 0 ? destinations.map((d) => d.id).join(", ") : "none"
+          }`,
+        };
+      }
+      return named.send(artifact, this.#client);
+    }
+
+    const destination = destinations.find((candidate) => candidate.default) ?? destinations[0];
 
     if (!destination) {
       return {

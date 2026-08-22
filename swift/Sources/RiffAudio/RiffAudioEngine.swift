@@ -99,7 +99,9 @@ public final class RiffAudioEngine: @unchecked Sendable {
 
         state.configure(capture: capture, playback: playback, converter: converter)
 
-        engine.attach(player)
+        // Attaching a node that is already attached raises inside AVAudioEngine, and start() after
+        // stop() is a supported path.
+        if player.engine == nil { engine.attach(player) }
         engine.connect(player, to: engine.mainMixerNode, format: playback)
 
         let chunkBytes = configuration.chunkFrames * MemoryLayout<Int16>.size

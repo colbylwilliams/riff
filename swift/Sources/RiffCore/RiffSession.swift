@@ -148,7 +148,7 @@ public final class RiffSession {
                 store: store
             )
             runtime.motifs = motifs
-            runtime.provenance = provenance()
+            runtime.provenance = { [weak self] in self?.provenance() ?? PromptArtifact.Provenance(fidelity: 0, utteranceCount: 0, bodyTokens: 0, agentAuthoredTokens: 0) }
             runtime.onLexiconChanged = { [weak self] in
                 guard let self else { return }
                 self.connection?.updateVocabulary(self.vocabulary())
@@ -328,7 +328,6 @@ public final class RiffSession {
                 durationMs: outcome.durationMs,
                 ok: outcome.ok
             ))
-            runtime?.provenance = provenance()
             emit(.tool(name: call.name, ok: outcome.ok, durationMs: outcome.durationMs))
 
             connection.respondToTool(callId: call.callId, resultJson: outcome.result.serialized())

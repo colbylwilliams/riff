@@ -40,6 +40,8 @@ export interface GroundingResult {
   sourceUtteranceIds: string[];
   /** Meaningful candidate tokens with no source. These are the words the agent invented. */
   unmatchedTokens: string[];
+  /** Set when the line failed for a reason the token comparison cannot express. */
+  reason?: string;
 }
 
 export interface Line {

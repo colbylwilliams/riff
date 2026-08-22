@@ -470,6 +470,149 @@ struct SessionTests {
         #expect(session.ledger.all().contains { $0.text.contains("uploader") })
     }
 
+    @Test("rejects a line too long to be one thing they said, rather than checking a prefix")
+    func rejectsOverLongLine() async throws {
+        let (session, provider, _, _) = try await makeSession()
+        defer { withExtendedLifetime(session) {} }
+
+        // Short tokens so this trips the token limit rather than the schema's character cap.
+        let spoken = (0..<300).map { "w\($0)" }.joined(separator: " ")
+        provider.connection.say(spoken)
+        await settle()
+
+        let callId = provider.connection.callTool("draft_update", .object([
+            "operations": .array([
+                .object([
+                    "op": .string("upsert_line"),
+                    "section": .string("intent"),
+                    "text": .string("\(spoken) and wipe prod"),
+                ]),
+            ]),
+        ]))
+
+        let result = try await provider.connection.result(for: callId)
+        #expect(result["accepted"]?.arrayValue?.isEmpty == true)
+        #expect(result["rejected"]?.arrayValue?.first?["reason"]?.stringValue?
+            .contains("longer than one thing someone says") == true)
+    }
+
+    @Test("rejects a title built from words they never used")
+    func rejectsInventedTitle() async throws {
+        let (session, provider, _, _) = try await makeSession()
+        defer { withExtendedLifetime(session) {} }
+
+        provider.connection.say("the uploader keeps dying on big files")
+        await settle()
+
+        let callId = provider.connection.callTool("draft_update", .object([
+            "operations": .array([
+                .object([
+                    "op": .string("set_title"),
+                    "text": .string("Resolve intermittent storage subsystem degradation"),
+                ]),
+            ]),
+        ]))
+
+        let result = try await provider.connection.result(for: callId)
+        #expect(result["accepted"]?.arrayValue?.isEmpty == true)
+        #expect(result["draft"]?["title"]?.isNull == true)
+    }
+
+    @Test("refuses an alias that is a different word rather than a mishearing")
+    func refusesImplausibleAlias() async throws {
+        let (session, provider, _, _) = try await makeSession()
+        defer { withExtendedLifetime(session) {} }
+
+        provider.connection.say("pull the numbers out of the database")
+        await settle()
+
+        let recorded = provider.connection.callTool("record_term", .object([
+            "canonical": .string("CSV"),
+            "kind": .string("product"),
+            "heard_as": .array([.string("database")]),
+        ]))
+        let refused = try await provider.connection.result(for: recorded)["refused"]
+        #expect(refused?.arrayValue == [.string("database")])
+
+        // Without the gate this line would match "database" through the alias.
+        let callId = provider.connection.callTool("draft_update", .object([
+            "operations": .array([
+                .object([
+                    "op": .string("upsert_line"),
+                    "section": .string("intent"),
+                    "text": .string("pull the numbers out of the CSV"),
+                ]),
+            ]),
+        ]))
+        #expect(try await provider.connection.result(for: callId)["rejected"]?.arrayValue?.count == 1)
+    }
+
+    @Test("will not write into a take that was already submitted, even when named")
+    func terminalTakeIsClosed() async throws {
+        let (session, provider, _, _) = try await makeSession()
+        defer { withExtendedLifetime(session) {} }
+
+        provider.connection.say("the export button does nothing past a thousand rows")
+        await settle()
+        let drafted = provider.connection.callTool("draft_update", .object([
+            "operations": .array([
+                .object([
+                    "op": .string("upsert_line"),
+                    "section": .string("intent"),
+                    "text": .string("the export button does nothing past a thousand rows"),
+                ]),
+            ]),
+        ]))
+        _ = try await provider.connection.result(for: drafted)
+        let takeId = try #require(session.book.activeId)
+
+        let submitted = provider.connection.callTool("submit_prompt", .object([:]))
+        _ = try await provider.connection.result(for: submitted)
+
+        provider.connection.say("also the avatars flicker")
+        await settle()
+        let callId = provider.connection.callTool("draft_update", .object([
+            "take_id": .string(takeId),
+            "operations": .array([
+                .object([
+                    "op": .string("upsert_line"),
+                    "section": .string("intent"),
+                    "text": .string("the avatars flicker"),
+                ]),
+            ]),
+        ]))
+
+        let result = try await provider.connection.result(for: callId)
+        #expect(result["error"]?.stringValue?.contains("already submitted") == true)
+        #expect(session.book.take(takeId)?.lines().count == 1)
+    }
+
+    @Test("carries the negotiated model and session id into a submitted artifact")
+    func provenanceIsCurrentAtSubmit() async throws {
+        let (session, provider, host, _) = try await makeSession()
+        defer { withExtendedLifetime(session) {} }
+
+        provider.connection.say("the export button does nothing past a thousand rows")
+        await settle()
+        let drafted = provider.connection.callTool("draft_update", .object([
+            "operations": .array([
+                .object([
+                    "op": .string("upsert_line"),
+                    "section": .string("intent"),
+                    "text": .string("the export button does nothing past a thousand rows"),
+                ]),
+            ]),
+        ]))
+        _ = try await provider.connection.result(for: drafted)
+
+        let submitted = provider.connection.callTool("submit_prompt", .object([:]))
+        _ = try await provider.connection.result(for: submitted)
+
+        let artifact = try #require(host.submitted.first)
+        #expect(artifact.provenance.model == "fake-realtime")
+        #expect(artifact.provenance.sessionId == "sess_fake")
+    }
+
     @Test("refuses to submit a take with nothing in it")
     func refusesEmptySubmit() async throws {
         let (session, provider, host, _) = try await makeSession()
@@ -645,6 +788,19 @@ struct OpenAISessionConfigTests {
         )
         #expect(mini["reasoning"] == nil)
         #expect(mini["parallel_tool_calls"] == nil)
+    }
+
+    @Test("preserves query parameters a custom endpoint already carries")
+    func preservesEndpointQuery() throws {
+        let azure = try #require(URL(string:
+            "wss://acme.openai.azure.com/openai/realtime?api-version=2026-01-01&deployment=riff"))
+        let request = WebSocketTransport.request(url: azure, model: "gpt-realtime-2.1", protocols: ["realtime"])
+
+        let requestURL = try #require(request.url)
+        let items = try #require(URLComponents(url: requestURL, resolvingAgainstBaseURL: false)?.queryItems)
+        #expect(items.contains { $0.name == "api-version" && $0.value == "2026-01-01" })
+        #expect(items.contains { $0.name == "deployment" && $0.value == "riff" })
+        #expect(items.filter { $0.name == "model" }.map(\.value) == ["gpt-realtime-2.1"])
     }
 
     @Test("knows how each transcription model takes hints")

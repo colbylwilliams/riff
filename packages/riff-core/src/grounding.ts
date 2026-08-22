@@ -41,9 +41,21 @@ export function createGroundingChecker(config: GroundingConfig, lexicon: Lexicon
   const ignorable = (token: string): boolean => free.has(token) || filler.single.has(token);
 
   const evaluate = (candidate: string, spans: readonly SourceSpan[], threshold: number, allowDerived: boolean): GroundingResult => {
-    const rawTokens = tokenize(candidate)
-      .map((t) => t.norm)
-      .slice(0, MAX_CANDIDATE_TOKENS);
+    const rawTokens = tokenize(candidate).map((t) => t.norm);
+
+    // Truncating here would check a prefix and let the caller store the whole string, so anything
+    // invented past the limit would be recorded as fully grounded. The gate has to see every token.
+    if (rawTokens.length > MAX_CANDIDATE_TOKENS) {
+      return {
+        ok: false,
+        ratio: 0,
+        kind: allowDerived ? "derived" : "trimmed",
+        sourceUtteranceIds: [],
+        unmatchedTokens: [],
+        reason: `that line is ${rawTokens.length} words, which is longer than one thing someone says; split it into separate lines`,
+      };
+    }
+
     const { tokens: candTokens, substituted } = lexicon.canonicalize(rawTokens);
 
     const substantiveIndexes = candTokens.map((t, i) => (ignorable(t) ? -1 : i)).filter((i) => i >= 0);

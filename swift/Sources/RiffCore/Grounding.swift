@@ -19,6 +19,8 @@ public struct GroundingResult: Sendable {
     public var sourceUtteranceIds: [String]
     /// Meaningful candidate tokens with no source. These are the words the agent invented.
     public var unmatchedTokens: [String]
+    /// Set when the line failed for a reason the token comparison cannot express.
+    public var reason: String?
 }
 
 /// Decides whether a line the agent wants to put in the prompt is made of the speaker's words.
@@ -58,7 +60,21 @@ public struct GroundingChecker: Sendable {
     }
 
     private func evaluate(_ candidate: String, _ spans: [SourceSpan], threshold: Double, allowDerived: Bool) -> GroundingResult {
-        let rawTokens = Array(RiffText.tokenize(candidate).prefix(Self.maxCandidateTokens))
+        let rawTokens = RiffText.tokenize(candidate)
+
+        // Truncating here would check a prefix and let the caller store the whole string, so
+        // anything invented past the limit would be recorded as fully grounded.
+        if rawTokens.count > Self.maxCandidateTokens {
+            return GroundingResult(
+                ok: false,
+                ratio: 0,
+                kind: allowDerived ? .derived : .trimmed,
+                sourceUtteranceIds: [],
+                unmatchedTokens: [],
+                reason: "that line is \(rawTokens.count) words, which is longer than one thing someone says; split it into separate lines"
+            )
+        }
+
         let (candTokens, substituted) = lexicon.canonicalize(rawTokens)
 
         let substantiveIndexes = candTokens.indices.filter { !ignorable(candTokens[$0]) }
