@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Riff — demo</title>
+    <link rel="stylesheet" href="./app.css" />
+
+    <!--
+      No bundler. The Riff packages are dependency-free ESM, so the browser loads the compiled
+      output directly and an import map resolves the one bare specifier between them.
+    -->
+    <script type="importmap">
+      {
+        "imports": {
+          "@riff/core": "/vendor/riff-core/index.js",
+          "@riff/openai-realtime": "/vendor/riff-openai-realtime/index.js"
+        }
+      }
+    </script>
+  </head>
+
+  <body>
+    <header class="bar">
+      <div class="brand">
+        <span class="brand-name">Riff</span>
+        <span class="brand-sub">demo</span>
+      </div>
+
+      <div class="status">
+        <span id="state-pill" class="pill" data-state="idle">idle</span>
+        <span id="take-label" class="muted"></span>
+      </div>
+
+      <div class="fidelity" title="Share of the prompt body that is provably the speaker's">
+        <svg viewBox="0 0 44 44" aria-hidden="true">
+          <circle class="ring-track" cx="22" cy="22" r="18" />
+          <circle id="ring-value" class="ring-value" cx="22" cy="22" r="18" />
+        </svg>
+        <div class="fidelity-text">
+          <strong id="fidelity-number">—</strong>
+          <span>fidelity</span>
+        </div>
+      </div>
+    </header>
+
+    <main class="panes">
+      <section class="pane">
+        <h2>What was said <span id="utterance-count" class="count">0</span></h2>
+        <p class="hint">
+          The utterance ledger. The only thing the prompt body is allowed to draw from.
+        </p>
+        <ol id="ledger" class="ledger"></ol>
+        <p id="pending" class="pending" hidden><span></span><span></span><span></span></p>
+      </section>
+
+      <section class="pane pane--draft">
+        <h2>
+          The prompt
+          <button id="toggle-markdown" class="ghost" type="button">markdown</button>
+        </h2>
+        <p class="hint">Hover a line to see which words it came from.</p>
+        <div id="draft" class="draft"></div>
+        <pre id="markdown" class="markdown" hidden></pre>
+      </section>
+
+      <section class="pane">
+        <h2>What Riff did</h2>
+        <p class="hint">Tool calls, and what the engine sent back.</p>
+        <ol id="activity" class="activity"></ol>
+      </section>
+    </main>
+
+    <footer class="controls">
+      <button id="mic" class="mic" type="button">
+        <span class="mic-dot"></span>
+        <span id="mic-label">Play the script</span>
+      </button>
+
+      <div class="meter" id="meter" hidden><i id="meter-fill"></i></div>
+
+      <button id="interrupt" class="ghost" type="button" hidden>Interrupt</button>
+
+      <form id="type-form" class="type">
+        <input
+          id="type-input"
+          type="text"
+          placeholder="…or type a line, it lands in the ledger too"
+          autocomplete="off"
+          disabled
+        />
+      </form>
+
+      <div class="modes">
+        <label><input type="radio" name="mode" value="scripted" checked /> scripted</label>
+        <label id="live-mode"><input type="radio" name="mode" value="live" /> live mic</label>
+      </div>
+    </footer>
+
+    <div class="legend">
+      <span class="chip chip--verbatim">verbatim</span>
+      <span class="chip chip--trimmed">trimmed</span>
+      <span class="chip chip--corrected">corrected</span>
+      <span class="chip chip--motif">motif</span>
+      <span class="chip chip--derived">derived</span>
+      <span class="chip chip--rejected">rejected</span>
+    </div>
+
+    <div id="sent" class="sheet" hidden>
+      <div class="sheet-card">
+        <div class="sheet-head">
+          <span class="sent-badge">sent</span>
+          <h3 id="sent-title"></h3>
+          <button id="sent-close" class="ghost" type="button">close</button>
+        </div>
+        <dl class="sent-meta">
+          <div><dt>destination</dt><dd id="sent-destination">—</dd></div>
+          <div><dt>fidelity</dt><dd id="sent-fidelity">—</dd></div>
+          <div><dt>from</dt><dd id="sent-utterances">—</dd></div>
+        </dl>
+        <pre id="sent-body" class="markdown"></pre>
+        <p class="sent-note">
+          This is the prompt that would have been delivered. The demo host accepted it and sent it
+          nowhere — nothing left this machine.
+        </p>
+      </div>
+    </div>
+
+    <audio id="agent-audio" autoplay></audio>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

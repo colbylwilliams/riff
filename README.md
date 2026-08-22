@@ -246,10 +246,24 @@ swift/
   Sources/RiffAudio/           capture and playback, including the echo cancellation setup
 tools/
   build-bundle.mjs   compiles core/agent into the bundle each binding ships
+examples/
+  riff-web/          a browser demo: microphone, live draft, grounding on screen, and a send
 docs/
 ```
 
 ## Getting started
+
+The fastest way to see what this does is to run the demo, which needs no API key:
+
+```bash
+npm install && npm run build
+npm run demo                     # http://localhost:4173
+```
+
+It replays the conversation above through the real engine — real ledger, real grounding check, real
+render — and shows the draft assembling itself line by line, including a paraphrase being rejected.
+Set `OPENAI_API_KEY` before starting it to enable the microphone and talk to it yourself. See
+[examples/riff-web](examples/riff-web).
 
 ### TypeScript
 

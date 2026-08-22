@@ -1,0 +1,566 @@
+import { MemoryStore, RiffSession, SECTIONS, loadBundle } from "@riff/core";
+
+import { DEMO_MOTIFS, DemoHost } from "./demo-host.js";
+import { DEMO_SCRIPT } from "./demo-script.js";
+import { ScriptedProvider } from "./scripted-provider.js";
+import { observeProvider } from "./observe-provider.js";
+
+const ui = {
+  statePill: document.getElementById("state-pill"),
+  takeLabel: document.getElementById("take-label"),
+  ring: document.getElementById("ring-value"),
+  fidelityNumber: document.getElementById("fidelity-number"),
+  ledger: document.getElementById("ledger"),
+  utteranceCount: document.getElementById("utterance-count"),
+  pending: document.getElementById("pending"),
+  draft: document.getElementById("draft"),
+  markdown: document.getElementById("markdown"),
+  toggleMarkdown: document.getElementById("toggle-markdown"),
+  activity: document.getElementById("activity"),
+  mic: document.getElementById("mic"),
+  micLabel: document.getElementById("mic-label"),
+  meter: document.getElementById("meter"),
+  meterFill: document.getElementById("meter-fill"),
+  interrupt: document.getElementById("interrupt"),
+  typeForm: document.getElementById("type-form"),
+  typeInput: document.getElementById("type-input"),
+  liveMode: document.getElementById("live-mode"),
+  agentAudio: document.getElementById("agent-audio"),
+  sent: document.getElementById("sent"),
+  sentTitle: document.getElementById("sent-title"),
+  sentBody: document.getElementById("sent-body"),
+  sentDestination: document.getElementById("sent-destination"),
+  sentFidelity: document.getElementById("sent-fidelity"),
+  sentUtterances: document.getElementById("sent-utterances"),
+  sentClose: document.getElementById("sent-close"),
+};
+
+const RING_CIRCUMFERENCE = 2 * Math.PI * 18;
+const KIND_COLORS = {
+  verbatim: "var(--verbatim)",
+  trimmed: "var(--trimmed)",
+  corrected: "var(--corrected)",
+  motif: "var(--motif)",
+  derived: "var(--derived)",
+};
+
+const bundle = loadBundle(await (await fetch("/riff-agent.bundle.json")).json());
+
+/** Everything torn down and rebuilt each time the mic is started. */
+let run = null;
+let lastArtifact = null;
+let lastSubmission = null;
+let agentEntry = null;
+let liveAvailable = false;
+
+/* ── running a session ───────────────────────────────────────────────────── */
+
+async function start() {
+  const mode = document.querySelector('input[name="mode"]:checked').value;
+  reset();
+  setMicBusy(true);
+
+  try {
+    run = mode === "live" ? await buildLive() : buildScripted();
+  } catch (error) {
+    // A refused microphone or a missing key should read as a normal outcome, not a dead page.
+    addEntry({ head: `could not start ${mode} mode`, note: error.message, variant: "rejected" });
+    setMicBusy(false);
+    return;
+  }
+
+  run.session.on(handleEvent);
+
+  try {
+    await run.session.start();
+  } catch (error) {
+    addEntry({ head: "connection failed", note: error.message, variant: "rejected" });
+    await stop();
+    return;
+  }
+
+  setMicRunning(true);
+  ui.typeInput.disabled = false;
+
+  if (run.scripted) {
+    await run.scripted.run();
+    // The script is the whole conversation, so reaching the end is the end of the session.
+    if (run) await stop();
+  }
+}
+
+async function stop() {
+  const current = run;
+  run = null;
+  if (!current) return;
+
+  current.scripted?.stop();
+  current.stopMeter?.();
+  for (const track of current.stream?.getTracks() ?? []) track.stop();
+  await current.session.stop("stopped");
+  await current.audioContext?.close().catch(() => {});
+
+  setMicRunning(false);
+  setMicBusy(false);
+  ui.typeInput.disabled = true;
+  ui.interrupt.hidden = true;
+  ui.meter.hidden = true;
+  ui.pending.hidden = true;
+}
+
+function buildScripted() {
+  const host = new DemoHost();
+  const scripted = new ScriptedProvider({
+    script: DEMO_SCRIPT,
+    speed: 1,
+    onStep: (step, phase) => {
+      if (step.user) ui.pending.hidden = phase !== "begin";
+      if (step.note && phase === "begin") addEntry({ head: "…", note: step.note, variant: "said" });
+    },
+  });
+
+  return {
+    scripted,
+    session: new RiffSession({
+      bundle,
+      host,
+      provider: observeProvider(scripted, { onToolResult: handleToolResult }),
+      store: new MemoryStore({ motifs: DEMO_MOTIFS }),
+    }),
+  };
+}
+
+/**
+ * The live path.
+ *
+ * On WebRTC the microphone is a media track handed to the peer connection rather than PCM pushed
+ * through `sendAudio`, so the browser's own echo cancellation and jitter buffering do the work that
+ * would otherwise be an audio worklet in this file.
+ */
+async function buildLive() {
+  const { OpenAIRealtimeProvider, clientSecretCredentials } = await import("@riff/openai-realtime");
+
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  });
+  const peer = new RTCPeerConnection();
+
+  const provider = new OpenAIRealtimeProvider({
+    transport: "webrtc",
+    credentials: clientSecretCredentials(async () => {
+      const response = await fetch("/api/riff/token", { method: "POST" });
+      if (!response.ok) throw new Error(`token endpoint said ${response.status}: ${await response.text()}`);
+      return response.json();
+    }),
+    webrtc: {
+      peerConnection: () => peer,
+      tracks: stream.getAudioTracks(),
+      onRemoteTrack: (track, streams) => {
+        ui.agentAudio.srcObject = streams[0] ?? new MediaStream([track]);
+      },
+    },
+  });
+
+  const { stopMeter, audioContext } = startMeter(stream);
+
+  return {
+    stream,
+    peer,
+    stopMeter,
+    audioContext,
+    session: new RiffSession({
+      bundle,
+      host: new DemoHost(),
+      provider: observeProvider(provider, { onToolResult: handleToolResult }),
+      store: new MemoryStore({ motifs: DEMO_MOTIFS }),
+    }),
+  };
+}
+
+/* ── events ──────────────────────────────────────────────────────────────── */
+
+function handleEvent(event) {
+  switch (event.type) {
+    case "state":
+      ui.statePill.textContent = event.state;
+      ui.statePill.dataset.state = event.state;
+      ui.interrupt.hidden = event.state !== "speaking" && event.state !== "thinking";
+      break;
+
+    case "utterance":
+      addUtterance(event.utterance);
+      break;
+
+    case "draft":
+      setFidelity(event.fidelity);
+      renderDraft(run?.session.artifact());
+      break;
+
+    case "take":
+      ui.takeLabel.textContent = event.takeId ? `take ${event.takeId}` : "";
+      break;
+
+    case "agent.transcript":
+      showAgentTranscript(event.text, event.final);
+      break;
+
+    case "interrupted":
+      addEntry({ head: "interrupted", note: "they started talking over it", variant: "said" });
+      break;
+
+    case "submitted":
+      lastArtifact = event.artifact;
+      renderDraft(event.artifact);
+      setFidelity(event.artifact.provenance.fidelity);
+      showSent();
+      break;
+
+    case "error":
+      addEntry({ head: event.error.code, note: event.error.message, variant: "rejected" });
+      break;
+
+    default:
+      break;
+  }
+}
+
+/**
+ * Tool results, seen through the provider decorator.
+ *
+ * This is where a rejected line shows up. Riff hides it from the speaker on purpose; the demo shows
+ * it, because a paraphrase being thrown out is the clearest evidence the gate is real.
+ */
+function handleToolResult({ name, args, result }) {
+  for (const { text, rejection } of matchRejections(args, result?.rejected ?? [])) {
+    addEntry({
+      head: `${name} · rejected`,
+      quote: text,
+      note: rejection.reason,
+      variant: "rejected",
+    });
+  }
+
+  if (name === "resolve_reference") {
+    const found = result?.candidates?.[0];
+    addEntry({
+      head: "resolve_reference",
+      note: found
+        ? `"${args.phrase}" → ${found.identifier ?? found.title}`
+        : `"${args.phrase}" → nothing found, so it will ask`,
+    });
+    return;
+  }
+
+  if (name === "submit_prompt") {
+    lastSubmission = result;
+    addEntry({ head: "submit_prompt", note: result?.message ?? "sent" });
+    showSent();
+    return;
+  }
+
+  const accepted = result?.accepted?.length ?? 0;
+  if (accepted > 0) {
+    addEntry({ head: name, note: `${accepted} operation${accepted === 1 ? "" : "s"} accepted` });
+  } else if (result?.attached) {
+    addEntry({ head: "motifs · attach", note: "a standing instruction, in their words" });
+  }
+}
+
+/**
+ * Pairs each rejection with the text that was turned away.
+ *
+ * A rejected `upsert_line` carries no line id when it was trying to create one, so the operation has
+ * to be found by shape. Matched operations are consumed, or two rejections in the same batch would
+ * both point at the first one.
+ */
+function matchRejections(args, rejected) {
+  const operations = [...(args?.operations ?? [])];
+
+  return rejected.map((rejection) => {
+    const index = operations.findIndex((operation) =>
+      rejection.lineId ? operation.line_id === rejection.lineId : operation.op === rejection.op,
+    );
+    const operation = index === -1 ? undefined : operations.splice(index, 1)[0];
+    return { rejection, text: operation?.text ?? "" };
+  });
+}
+
+/* ── rendering ───────────────────────────────────────────────────────────── */
+
+function addUtterance(utterance) {
+  const item = document.createElement("li");
+  item.className = "utterance";
+  item.dataset.utteranceId = utterance.id;
+
+  const head = document.createElement("div");
+  head.className = "utterance-head";
+  head.append(span(utterance.id), span(utterance.source));
+  item.append(head, span(utterance.text));
+
+  item.addEventListener("mouseenter", () => highlightFromUtterance(utterance.id));
+  item.addEventListener("mouseleave", clearHighlights);
+
+  ui.ledger.append(item);
+  ui.utteranceCount.textContent = ui.ledger.children.length;
+  item.scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+
+function renderDraft(artifact) {
+  if (artifact) lastArtifact = artifact;
+  const current = artifact ?? lastArtifact;
+
+  ui.draft.replaceChildren();
+  ui.markdown.textContent = current?.rendered ?? "";
+
+  if (!current || current.lines.length === 0) {
+    ui.draft.append(paragraph("Nothing captured yet.", "hint"));
+    return;
+  }
+
+  const title = document.createElement("h3");
+  title.className = "draft-title";
+  title.textContent = current.title.text;
+  ui.draft.append(title);
+
+  for (const section of SECTIONS) {
+    const lines = current.lines.filter((line) => line.section === section);
+    if (lines.length === 0) continue;
+
+    const block = document.createElement("div");
+    block.className = "draft-section";
+
+    const heading = document.createElement("h3");
+    heading.textContent = bundle.render.labels[section] ?? section.replace(/_/g, " ");
+    block.append(heading);
+
+    const list = document.createElement("ul");
+    for (const line of lines) list.append(renderLine(line));
+    block.append(list);
+    ui.draft.append(block);
+  }
+
+  if (current.context.length > 0) {
+    const context = document.createElement("div");
+    context.className = "context";
+    for (const item of current.context) context.append(renderContext(item));
+    ui.draft.append(context);
+  }
+}
+
+function renderLine(line) {
+  const item = document.createElement("li");
+  item.className = "line";
+  item.dataset.kind = line.grounding.kind;
+  item.dataset.sources = line.sourceUtteranceIds.join(" ");
+
+  const chip = document.createElement("span");
+  chip.className = `chip chip--${line.grounding.kind}`;
+  chip.textContent =
+    line.grounding.kind === "motif"
+      ? "motif"
+      : `${line.grounding.kind} ${Math.round(line.grounding.ratio * 100)}%`;
+
+  item.append(span(line.text, "line-text"), chip);
+  item.addEventListener("mouseenter", () => highlightFromLine(item));
+  item.addEventListener("mouseleave", clearHighlights);
+  return item;
+}
+
+function renderContext(item) {
+  const chip = document.createElement(item.url ? "a" : "span");
+  chip.className = "context-chip";
+  if (item.url) {
+    chip.href = item.url;
+    chip.target = "_blank";
+    chip.rel = "noreferrer";
+  }
+
+  chip.append(span(item.identifier ?? item.title));
+  if (item.resolvedFrom) {
+    const note = document.createElement("small");
+    note.textContent = `“${item.resolvedFrom}”`;
+    chip.append(note);
+  }
+  return chip;
+}
+
+function showAgentTranscript(text, final) {
+  // The note element is held onto rather than queried back, because an empty first delta would
+  // leave nothing to query and the rest of the sentence would never appear.
+  if (!agentEntry) {
+    const note = paragraph(text, "entry-note");
+    agentEntry = { entry: addEntry({ head: "Riff", variant: "agent" }), note };
+    agentEntry.entry.append(note);
+  } else {
+    agentEntry.note.textContent = text;
+  }
+  if (final) agentEntry = null;
+}
+
+function addEntry({ head, quote, note, variant }) {
+  const item = document.createElement("li");
+  item.className = variant ? `entry entry--${variant}` : "entry";
+
+  const heading = document.createElement("div");
+  heading.className = "entry-head";
+  heading.textContent = head;
+  item.append(heading);
+
+  if (quote) item.append(paragraph(`“${quote}”`, "entry-quote"));
+  if (note) item.append(paragraph(note, "entry-note"));
+
+  ui.activity.append(item);
+  item.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  return item;
+}
+
+function setFidelity(fidelity) {
+  ui.ring.style.strokeDashoffset = String(RING_CIRCUMFERENCE * (1 - fidelity));
+  ui.ring.style.stroke = fidelity === 1 ? KIND_COLORS.verbatim : KIND_COLORS.corrected;
+  ui.fidelityNumber.textContent = `${Math.round(fidelity * 100)}%`;
+}
+
+function showSent() {
+  if (!lastArtifact) return;
+  ui.sentTitle.textContent = lastArtifact.title.text;
+  ui.sentBody.textContent = lastArtifact.rendered;
+  ui.sentFidelity.textContent = `${Math.round(lastArtifact.provenance.fidelity * 100)}%`;
+  ui.sentUtterances.textContent = `${lastArtifact.provenance.utteranceCount} utterances`;
+  ui.sentDestination.textContent = lastSubmission?.destination ?? "…";
+  ui.sent.hidden = false;
+}
+
+/* ── cross-highlighting ──────────────────────────────────────────────────── */
+
+function highlightFromLine(item) {
+  const sources = new Set(item.dataset.sources.split(" ").filter(Boolean));
+  for (const row of ui.ledger.children) {
+    row.classList.toggle("is-source", sources.has(row.dataset.utteranceId));
+  }
+}
+
+function highlightFromUtterance(utteranceId) {
+  for (const line of ui.draft.querySelectorAll(".line")) {
+    const matched = line.dataset.sources.split(" ").includes(utteranceId);
+    line.style.background = matched ? "var(--panel-soft)" : "";
+  }
+  for (const row of ui.ledger.children) {
+    row.classList.toggle("is-source", row.dataset.utteranceId === utteranceId);
+  }
+}
+
+function clearHighlights() {
+  for (const row of ui.ledger.children) row.classList.remove("is-source");
+  for (const line of ui.draft.querySelectorAll(".line")) line.style.background = "";
+}
+
+/* ── microphone level ────────────────────────────────────────────────────── */
+
+function startMeter(stream) {
+  const audioContext = new AudioContext();
+  const analyser = audioContext.createAnalyser();
+  analyser.fftSize = 512;
+  audioContext.createMediaStreamSource(stream).connect(analyser);
+
+  const samples = new Uint8Array(analyser.frequencyBinCount);
+  let frame = 0;
+
+  ui.meter.hidden = false;
+  const tick = () => {
+    analyser.getByteTimeDomainData(samples);
+    let sum = 0;
+    for (const sample of samples) sum += (sample - 128) ** 2;
+    const level = Math.min(1, Math.sqrt(sum / samples.length) / 40);
+    ui.meterFill.style.width = `${level * 100}%`;
+    frame = requestAnimationFrame(tick);
+  };
+  frame = requestAnimationFrame(tick);
+
+  return { audioContext, stopMeter: () => cancelAnimationFrame(frame) };
+}
+
+/* ── chrome ──────────────────────────────────────────────────────────────── */
+
+function reset() {
+  lastArtifact = null;
+  lastSubmission = null;
+  agentEntry = null;
+  ui.ledger.replaceChildren();
+  ui.activity.replaceChildren();
+  ui.utteranceCount.textContent = "0";
+  ui.sent.hidden = true;
+  setFidelity(0);
+  renderDraft(null);
+}
+
+function setMicRunning(running) {
+  ui.mic.classList.toggle("is-running", running);
+  ui.mic.disabled = false;
+  ui.micLabel.textContent = running ? "Stop" : defaultMicLabel();
+  // Live mode stays off without a key on the server, so it is not simply the inverse of `running`.
+  for (const input of document.querySelectorAll('input[name="mode"]')) {
+    input.disabled = running || (input.value === "live" && !liveAvailable);
+  }
+}
+
+function setMicBusy(busy) {
+  ui.mic.disabled = busy;
+  if (busy) ui.micLabel.textContent = "Starting…";
+  else if (!run) ui.micLabel.textContent = defaultMicLabel();
+}
+
+function defaultMicLabel() {
+  const mode = document.querySelector('input[name="mode"]:checked').value;
+  return mode === "live" ? "Start talking" : "Play the script";
+}
+
+function span(text, className) {
+  const element = document.createElement("span");
+  if (className) element.className = className;
+  element.textContent = text;
+  return element;
+}
+
+function paragraph(text, className) {
+  const element = document.createElement("p");
+  element.className = className;
+  element.textContent = text;
+  return element;
+}
+
+ui.mic.addEventListener("click", () => (run ? stop() : start()));
+ui.interrupt.addEventListener("click", () => run?.session.interrupt());
+ui.sentClose.addEventListener("click", () => (ui.sent.hidden = true));
+ui.toggleMarkdown.addEventListener("click", () => {
+  const showingMarkdown = ui.markdown.hidden;
+  ui.markdown.hidden = !showingMarkdown;
+  ui.draft.hidden = showingMarkdown;
+  ui.toggleMarkdown.textContent = showingMarkdown ? "lines" : "markdown";
+});
+
+ui.typeForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const text = ui.typeInput.value.trim();
+  if (!text || !run) return;
+  run.session.sendText(text);
+  ui.typeInput.value = "";
+});
+
+for (const input of document.querySelectorAll('input[name="mode"]')) {
+  input.addEventListener("change", () => (ui.micLabel.textContent = defaultMicLabel()));
+}
+
+// Live mode needs a key on the server, so say so up front rather than failing on the first click.
+const config = await fetch("/api/riff/config")
+  .then((response) => response.json())
+  .catch(() => ({ live: false }));
+
+liveAvailable = Boolean(config.live);
+if (!liveAvailable) {
+  ui.liveMode.querySelector("input").disabled = true;
+  ui.liveMode.setAttribute("aria-disabled", "true");
+  ui.liveMode.title = "Set OPENAI_API_KEY before starting the server to enable live mode";
+}
+
+renderDraft(null);
+setFidelity(0);
