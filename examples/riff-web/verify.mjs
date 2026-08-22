@@ -83,22 +83,37 @@ assert.equal(host.submitted.length, 1, "the host should have received the artifa
 const spoken = events.findLast((event) => event.type === "agent.transcript" && event.final);
 assert.equal(spoken?.text, "that's 412, chunked uploads.");
 
-const expected = [
-  "# Fix the export button",
-  "",
-  "the export button on the dashboard does nothing if you've got more than about a thousand rows. just spins. it's related to the PR I just opened.",
-  "",
-  "**Constraints**",
-  "- don't touch the generated files",
-  "",
-  "**Done when**",
-  "- I should be able to export like fifty thousand rows without it falling over",
-  "",
-  "**Context**",
-  '- acme/web#412 "Chunked uploads" (open) by you — https://github.com/acme/web/pull/412 — referred to as "the PR I just opened"',
-].join("\n");
+assert.equal(artifact.rendered, readmePrompt(), "the rendered prompt drifted from the README");
 
-assert.equal(artifact.rendered, expected, "the rendered prompt drifted from the README");
+/**
+ * The prompt the README promises, read from the README.
+ *
+ * Comparing against a copy pasted into this file would pass while the two drifted apart, which is
+ * the one failure this check exists to catch. The block is hard-wrapped for reading, so continuation
+ * lines are folded back into the single lines the renderer actually produces.
+ */
+function readmePrompt() {
+  const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
+  const block = /^What gets submitted:\s*```markdown\n([\s\S]*?)```/m.exec(readme);
+  assert.ok(block, "could not find the submitted-prompt block in the README");
+
+  return block[1]
+    .trim()
+    .split("\n\n")
+    .map((paragraph) =>
+      paragraph
+        .split("\n")
+        .reduce((lines, line) => {
+          // A heading, a list item, or a bold label starts a line; anything else continues one.
+          const starts = /^(#|-\s|\*\*)/.test(line) || lines.length === 0;
+          if (starts) lines.push(line.trim());
+          else lines[lines.length - 1] += ` ${line.trim()}`;
+          return lines;
+        }, [])
+        .join("\n"),
+    )
+    .join("\n\n");
+}
 
 console.log(artifact.rendered);
 console.log(

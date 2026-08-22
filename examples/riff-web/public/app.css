@@ -300,6 +300,12 @@ h2 {
   background: var(--panel-soft);
 }
 
+.line:focus-visible,
+.utterance:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .line-text {
   flex: 1;
 }

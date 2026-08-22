@@ -122,7 +122,7 @@
           These are posted once to the demo server on this machine, which keeps them in memory for as
           long as it is running. They are never stored, never sent back to this page, and never used
           from it — the browser only ever gets a short-lived OpenAI secret and answers to host
-          questions. Leave a field blank to keep what is already set; clear a set one to forget it.
+          questions. A blank field leaves what is already set alone; use Forget to remove it.
         </p>
 
         <label class="field">
@@ -165,10 +165,7 @@
           <div><dt>from</dt><dd id="sent-utterances">—</dd></div>
         </dl>
         <pre id="sent-body" class="markdown"></pre>
-        <p class="sent-note">
-          This is the prompt that would have been delivered. The demo host accepted it and sent it
-          nowhere — nothing left this machine.
-        </p>
+        <p id="sent-note" class="sent-note"></p>
       </div>
     </div>
 

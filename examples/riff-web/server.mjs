@@ -24,8 +24,19 @@ import { promisify } from "node:util";
 const here = fileURLToPath(new URL(".", import.meta.url));
 const repoRoot = resolve(here, "../..");
 const port = Number(process.env.PORT ?? 4173);
-// Loopback only. This process holds credentials, so it has no business listening on a LAN.
-const address = process.env.HOST ?? "127.0.0.1";
+const address = loopbackOnly(process.env.HOST ?? "127.0.0.1");
+
+/**
+ * This process holds an OpenAI key and a GitHub token, and it accepts requests with no `Origin` so
+ * that curl still works. Those two together mean binding anywhere but loopback would let anything
+ * that can reach the port mint secrets and spend the token, so a wider bind is refused outright
+ * rather than honored with a warning.
+ */
+function loopbackOnly(host) {
+  if (["127.0.0.1", "localhost", "::1", "[::1]"].includes(host)) return host;
+  console.error(`refusing to bind to ${host}: this server holds credentials and is loopback only`);
+  process.exit(1);
+}
 
 /** URL prefixes mapped onto directories. First match wins, so `/` is last. */
 const MOUNTS = [
@@ -108,10 +119,11 @@ const dryRunDestination = {
 /** Rebuilt per request so the issue toggle takes effect without restarting anything. */
 function githubHost({ allowIssues = false } = {}) {
   const repository = credentials.repository;
-  // Exactly one default, or the agent is choosing between two things that both claim to be it.
+  // The real destination is not merely non-default when issues are off — it is absent. Offering it
+  // at all would let the model honor "file it as an issue" while the page promises a dry run.
   const destinations = allowIssues
     ? [issueDestination({ repository, default: true })]
-    : [{ ...dryRunDestination, default: true }, issueDestination({ repository })];
+    : [{ ...dryRunDestination, default: true }];
 
   return new GitHubHost({
     token: credentials.github.token,
@@ -258,13 +270,19 @@ function tidy(message) {
   return flattened.length > 160 ? `${flattened.slice(0, 157)}…` : flattened;
 }
 
-/** The RiffHost surface, and the only methods this endpoint will dispatch. */
+/**
+ * The RiffHost surface, and the only methods this endpoint will dispatch.
+ *
+ * Each takes the signal so an abandoned request actually stops the outbound GitHub call. Riff aborts
+ * a host call it has stopped waiting for, and `submitPrompt` has a side effect the speaker can see —
+ * without this, a timed-out submission finishes anyway and the retry files a second issue.
+ */
 const HOST_METHODS = {
   environment: (host) => host.environment(),
-  resolveReference: (host, body) => host.resolveReference(body.request ?? {}),
-  lookupTerm: (host, body) => host.lookupTerm(body.request ?? {}),
-  recallPrompts: (host, body) => host.recallPrompts(body.request ?? {}),
-  submitPrompt: (host, body) => host.submitPrompt(body.artifact, body.options ?? {}),
+  resolveReference: (host, body, signal) => host.resolveReference({ ...body.request, signal }),
+  lookupTerm: (host, body, signal) => host.lookupTerm({ ...body.request, signal }),
+  recallPrompts: (host, body, signal) => host.recallPrompts({ ...body.request, signal }),
+  submitPrompt: (host, body, signal) => host.submitPrompt(body.artifact, { ...body.options, signal }),
 };
 
 async function callHost(request, response) {
@@ -278,11 +296,21 @@ async function callHost(request, response) {
   const method = HOST_METHODS[body.method];
   if (!method) return json(response, 400, { error: `no host method "${body.method}"` });
 
+  // The browser aborts its fetch when Riff gives up, which closes this socket; that is the only
+  // signal available here that nobody is waiting for the answer any more.
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  request.once("aborted", abort);
+  response.once("close", abort);
+
   try {
-    json(response, 200, (await method(githubHost(body.settings ?? {}), body)) ?? {});
+    json(response, 200, (await method(githubHost(body.settings ?? {}), body, controller.signal)) ?? {});
   } catch (error) {
     // Riff turns this into a tool error the agent can talk about, which beats a dead session.
-    json(response, 502, { error: error.message });
+    if (!response.writableEnded) json(response, 502, { error: error.message });
+  } finally {
+    request.off("aborted", abort);
+    response.off("close", abort);
   }
 }
 

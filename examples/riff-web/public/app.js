@@ -54,6 +54,7 @@ const ui = {
   sentDestination: document.getElementById("sent-destination"),
   sentFidelity: document.getElementById("sent-fidelity"),
   sentUtterances: document.getElementById("sent-utterances"),
+  sentNote: document.getElementById("sent-note"),
   sentClose: document.getElementById("sent-close"),
 };
 
@@ -121,9 +122,11 @@ async function start() {
   ui.typeInput.disabled = false;
 
   if (run.scripted) {
+    const started = run;
     await run.scripted.run();
-    // The script is the whole conversation, so reaching the end is the end of the session.
-    if (run) await stop();
+    // Identity, not truthiness: stopping and starting again while the last step was still sleeping
+    // would otherwise land here holding a new session and tear that one down instead.
+    if (run === started) await stop();
   }
 }
 
@@ -334,14 +337,19 @@ function addUtterance(utterance) {
   const item = document.createElement("li");
   item.className = "utterance";
   item.dataset.utteranceId = utterance.id;
+  // The cross-link is the point of this pane, so it has to be reachable without a mouse.
+  item.tabIndex = 0;
 
   const head = document.createElement("div");
   head.className = "utterance-head";
   head.append(span(utterance.id), span(utterance.source));
   item.append(head, span(utterance.text));
 
-  item.addEventListener("mouseenter", () => highlightFromUtterance(utterance.id));
+  const show = () => highlightFromUtterance(utterance.id);
+  item.addEventListener("mouseenter", show);
+  item.addEventListener("focus", show);
   item.addEventListener("mouseleave", clearHighlights);
+  item.addEventListener("blur", clearHighlights);
 
   ui.ledger.append(item);
   ui.utteranceCount.textContent = ui.ledger.children.length;
@@ -395,6 +403,7 @@ function renderLine(line) {
   item.className = "line";
   item.dataset.kind = line.grounding.kind;
   item.dataset.sources = line.sourceUtteranceIds.join(" ");
+  item.tabIndex = 0;
 
   const chip = document.createElement("span");
   chip.className = `chip chip--${line.grounding.kind}`;
@@ -404,8 +413,12 @@ function renderLine(line) {
       : `${line.grounding.kind} ${Math.round(line.grounding.ratio * 100)}%`;
 
   item.append(span(line.text, "line-text"), chip);
-  item.addEventListener("mouseenter", () => highlightFromLine(item));
+
+  const show = () => highlightFromLine(item);
+  item.addEventListener("mouseenter", show);
+  item.addEventListener("focus", show);
   item.addEventListener("mouseleave", clearHighlights);
+  item.addEventListener("blur", clearHighlights);
   return item;
 }
 
@@ -470,6 +483,15 @@ function showSent() {
   ui.sentFidelity.textContent = `${Math.round(lastArtifact.provenance.fidelity * 100)}%`;
   ui.sentUtterances.textContent = `${lastArtifact.provenance.utteranceCount} utterances`;
   ui.sentDestination.textContent = lastSubmission?.destination ?? "…";
+
+  // Telling someone nothing was delivered when an issue was in fact filed invites them to send it
+  // again, so this says what the host reported rather than what the demo usually does.
+  const url = lastSubmission?.url;
+  ui.sentNote.textContent = url
+    ? `Delivered to ${url}`
+    : (lastSubmission?.message ??
+      "This is the prompt that would have been delivered. The host accepted it and sent it nowhere.");
+
   ui.sent.hidden = false;
 }
 
@@ -675,10 +697,13 @@ ui.keys.addEventListener("click", (event) => {
 
 ui.keysForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const body = { repository: ui.githubRepo.value };
-  // An untouched field means "leave it alone", which is not the same as "clear it".
+  // Only fields that were filled in are sent. An empty one means "leave it alone" — sending it
+  // would clear the value, and an empty repository would silently retarget the host at the
+  // checkout's own remote. Forgetting a credential is what the Forget button is for.
+  const body = {};
   if (ui.openaiKey.value.trim()) body.openaiApiKey = ui.openaiKey.value;
   if (ui.githubKey.value.trim()) body.githubToken = ui.githubKey.value;
+  if (ui.githubRepo.value.trim()) body.repository = ui.githubRepo.value;
 
   if (await saveKeys(body)) ui.keys.hidden = true;
 });

@@ -65,7 +65,6 @@ const PULL_REQUEST = {
   title: "Chunked uploads",
   identifier: "acme/web#412",
   url: "https://github.com/acme/web/pull/412",
-  actor: "you",
   state: "open",
   timestamp: "2025-01-14T17:02:00Z",
 };

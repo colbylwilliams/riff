@@ -20,6 +20,9 @@ jobs:
       - run: npm run bundle:check
       - run: npm run build
       - run: node --test "packages/*/test/**/*.test.ts"
+      # The example runs the real engine, so a change to the bundle, the grounding config, or a
+      # render profile can break it. This asserts it still produces the prompt the README promises.
+      - run: npm run demo:verify
 
   swift:
     runs-on: macos-15

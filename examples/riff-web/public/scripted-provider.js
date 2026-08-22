@@ -13,8 +13,6 @@
 /** 10ms of silence at 24kHz mono PCM16. Enough to drive the speaking state, nothing to hear. */
 const SILENT_CHUNK = new Uint8Array(480 * 2);
 
-const TOOL_SETTLE_TIMEOUT_MS = 5_000;
-
 export class ScriptedProvider {
   id = "scripted";
 
@@ -87,7 +85,7 @@ export class ScriptedProvider {
         return () => this.#listeners.delete(listener);
       },
       close: async () => {
-        this.#aborted = true;
+        this.stop();
         this.#emit({ type: "closed", reason: "script ended" });
       },
     };
@@ -155,9 +153,12 @@ export class ScriptedProvider {
    * the script has the agent speak next.
    */
   async #callTools(calls, nextStep) {
+    // Waiting on the engine rather than on a clock. A timer here would have to be longer than the
+    // bundle's tool timeout to be safe, and a host call that runs long would otherwise advance the
+    // script before the tool result came back, leaving the real continuation with nothing to start.
+    // `stop()` releases this, so an abandoned run does not hang here.
     const settled = new Promise((resolve) => {
       this.#pendingResponse = resolve;
-      setTimeout(resolve, TOOL_SETTLE_TIMEOUT_MS);
     });
 
     this.#emit({
