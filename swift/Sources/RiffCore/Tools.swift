@@ -342,30 +342,39 @@ public final class ToolRegistry {
         let canonical = RiffText.tidyWhitespace(args["canonical"]?.stringValue ?? "")
         guard !canonical.isEmpty else { throw RiffError.tool("record_term needs a canonical spelling") }
 
-        // An alias is applied to both sides of every grounding comparison, so one that is not
-        // actually a mishearing would let an invented word match a different spoken word.
+        // Aliases are applied to both sides of every grounding comparison, so one for a word that
+        // is not really the same word lets an invented line match different spoken words.
+        // Similarity does not establish sameness — "cache" and "cash" are one edit apart — so an
+        // alias only becomes grounding-active when something outside this conversation confirms it.
         let proposed = args["heard_as"]?.arrayValue?.compactMap(\.stringValue) ?? []
-        let accepted = proposed.filter { isPlausibleMishearing($0, canonical) }
-        let refused = proposed.filter { !accepted.contains($0) }
+        let plausible = proposed.filter { isPlausibleMishearing($0, canonical) }
+        let refused = proposed.filter { !plausible.contains($0) }
+
+        let known = runtime.lexicon.lookup(canonical).contains { $0.canonical == canonical }
+        let confirmed = try await known
+            ? true
+            : runtime.host.lookupTerm(LookupTermRequest(heard: canonical, context: nil, kind: nil))
+                .contains { termKey($0.term.canonical) == termKey(canonical) }
 
         let term = LexiconTerm(
             canonical: canonical,
             kind: args["kind"]?.stringValue ?? "other",
-            heardAs: accepted.isEmpty ? nil : accepted,
+            heardAs: plausible.isEmpty ? nil : plausible,
             definition: args["definition"]?.stringValue,
             scope: scope
         )
 
-        runtime.lexicon.add(term)
+        runtime.lexicon.add(term, corroborated: confirmed)
         runtime.ledger.invalidate()
         if scope != "session" { try await runtime.store.saveTerm(term) }
         runtime.onLexiconChanged?()
 
         return json([
             ("recorded", .string(term.canonical)),
-            ("corrections", .number(Double(accepted.count))),
+            ("corrections", .number(Double(confirmed ? plausible.count : 0))),
             ("refused", refused.isEmpty ? nil : .array(refused.map { .string($0) })),
             ("reason", refused.isEmpty ? nil : .string("a correction has to be a mishearing of the same word; those are different words, so record the term without them")),
+            ("note", confirmed ? nil : .string("nothing here knows that term, so it will help transcription but cannot be used as a spelling correction; write what they actually said")),
         ])
     }
 

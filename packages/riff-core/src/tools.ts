@@ -6,7 +6,7 @@ import type { GroundingChecker } from "./grounding.ts";
 import type { DraftOperation } from "./draft.ts";
 import { DraftBook, Take, applyDraftOperations, isReady } from "./draft.ts";
 import { buildArtifact, renderPrompt, summarizeDraft } from "./render.ts";
-import { isPlausibleMishearing } from "./lexicon.ts";
+import { isPlausibleMishearing, termKey } from "./lexicon.ts";
 import { validate } from "./schema.ts";
 import { tidyWhitespace } from "./text.ts";
 
@@ -303,32 +303,43 @@ const HANDLERS: Record<string, Handler> = {
   async record_term(
     args: { canonical: string; kind: string; heard_as?: string[]; definition?: string; scope?: string },
     runtime,
+    call,
   ) {
     const canonical = tidyWhitespace(args.canonical);
     if (!canonical) throw new Error("record_term needs a canonical spelling");
 
-    // An alias is applied to both sides of every grounding comparison, so one that is not actually a
-    // mishearing would let an invented word match a different spoken word.
+    // Aliases are applied to both sides of every grounding comparison, so one for a word that is
+    // not really the same word lets an invented line match different spoken words. Similarity does
+    // not establish sameness — "cache" and "cash" are one edit apart — so an alias only becomes
+    // grounding-active when something outside this conversation confirms the term exists.
     const proposed = args.heard_as ?? [];
-    const accepted = proposed.filter((heard) => isPlausibleMishearing(heard, canonical));
-    const refused = proposed.filter((heard) => !accepted.includes(heard));
+    const plausible = proposed.filter((heard) => isPlausibleMishearing(heard, canonical));
+    const refused = proposed.filter((heard) => !plausible.includes(heard));
+
+    const known = runtime.lexicon.lookup(canonical).some((match) => match.canonical === canonical);
+    const confirmed =
+      known ||
+      (await runtime.host.lookupTerm({
+        heard: canonical,
+        ...(call.signal ? { signal: call.signal } : {}),
+      })).matches.some((match) => termKey(match.canonical) === termKey(canonical));
 
     const term = {
       canonical,
       kind: args.kind,
-      ...(accepted.length > 0 ? { heardAs: accepted } : {}),
+      ...(plausible.length > 0 ? { heardAs: plausible } : {}),
       ...(args.definition ? { definition: args.definition } : {}),
       scope: (args.scope ?? "user") as "session" | "user" | "workspace",
     };
 
-    runtime.lexicon.add(term);
+    runtime.lexicon.add(term, { corroborated: confirmed });
     runtime.ledger.invalidate();
     if (term.scope !== "session") await runtime.store.saveTerm(term);
     runtime.onLexiconChanged?.();
 
     return {
       recorded: term.canonical,
-      corrections: accepted.length,
+      corrections: confirmed ? plausible.length : 0,
       ...(refused.length > 0
         ? {
             refused,
@@ -336,6 +347,11 @@ const HANDLERS: Record<string, Handler> = {
               "a correction has to be a mishearing of the same word; those are different words, so record the term without them",
           }
         : {}),
+      ...(confirmed
+        ? {}
+        : {
+            note: "nothing here knows that term, so it will help transcription but cannot be used as a spelling correction; write what they actually said",
+          }),
     };
   },
 

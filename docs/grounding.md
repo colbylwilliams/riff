@@ -60,11 +60,16 @@ every word is present.
 
 The alignment uses Hirschberg's divide and conquer, which holds two DP rows rather than a full
 table. That is not an optimization, it is what makes the check correct. Earlier versions bounded the
-comparison instead — first the candidate, then the source — and every bound was wrong in a way
-nobody could see from the outside: a cap on the candidate let invented text past the gate, and a cap
-on the source rejected lines that were entirely the speaker's, including one that simply kept the
-start and end of a long turn. Linear memory removes the need for a cap, so there is no longer a
-bound that can be wrong.
+comparison instead — first the candidate, then the source — and each bound *truncated*, which is the
+part that was wrong: a truncated candidate let invented text past the gate, and a truncated source
+rejected lines that were entirely the speaker's, including one that simply kept the start and end of
+a long turn. Linear memory means the source is never truncated, however long the turn.
+
+One limit remains, and it is a different kind. A candidate over `MAX_CANDIDATE_TOKENS` (240) is
+**rejected**, not truncated: the agent is told the line is longer than one thing someone says and to
+split it. A limit that refuses is safe, because nothing enters the prompt unchecked and the model
+gets a result it can act on. A limit that silently drops input is not. That distinction is the whole
+lesson of this function.
 
 **5. Score.** The ratio is *matched meaningful tokens over total meaningful tokens*. Connective words
 listed in `freeTokens` ("the", "a", "and", "to") and filler are excluded from the denominator: they
@@ -97,12 +102,22 @@ same word recognize each other.
 That alone is not enough, because the agent can add aliases mid-session through `record_term`. An
 alias that is not a mishearing but a different word would defeat the gate outright: install
 `{canonical: "CSV", heardAs: ["database"]}` and an invented "CSV" line matches spoken "database".
-So aliases arriving through `record_term` must be plausible mishearings of the canonical form —
-close after collapsing to letters and digits. Curated vocabulary is exempt, because the seed and
-workspace lexicons legitimately contain aliases that are not orthographically close, such as
-"sequel" for SQL or "k8s" for Kubernetes.
 
-With both rules in place, a bad alias costs a rejection rather than a false acceptance.
+Two rules close that. First, an alias must be a plausible mishearing — close after collapsing to
+letters and digits — which rejects the obvious case. Second, and more importantly, **similarity is
+not evidence of sameness**: "cache" and "cash" are one edit apart and mean nothing alike, and
+homophones are exactly where a similarity test is weakest and mishearings are most likely. So a term
+the agent records only becomes grounding-active when something outside the conversation corroborates
+it — the curated lexicon already knows it, or the host's `lookupTerm` confirms it.
+
+An uncorroborated term is still recorded, and still biases transcription so the recognizer does
+better next time. It just cannot be used as a spelling correction, which means the agent writes what
+was actually said. That is the right outcome anyway: if nothing in the speaker's world knows the
+word, the safe assumption is that the transcript is right and the agent is guessing.
+
+Curated vocabulary is exempt from both rules, because the seed and workspace lexicons legitimately
+contain aliases that are not orthographically close, such as "sequel" for SQL or "k8s" for
+Kubernetes.
 
 ## Sections and modes
 

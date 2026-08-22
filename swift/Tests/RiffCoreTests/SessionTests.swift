@@ -166,6 +166,13 @@ final class RecordingHost: RiffHost, @unchecked Sendable {
     private let lock = NSLock()
     private var stored: [ContextItem] = []
     private var received: [PromptArtifact] = []
+    private var known: [String] = []
+
+    /// Vocabulary this world knows about, which is what corroborates a spelling correction.
+    var knownTerms: [String] {
+        get { lock.lock(); defer { lock.unlock() }; return known }
+        set { lock.lock(); known = newValue; lock.unlock() }
+    }
 
     var candidates: [ContextItem] {
         get { lock.lock(); defer { lock.unlock() }; return stored }
@@ -178,7 +185,11 @@ final class RecordingHost: RiffHost, @unchecked Sendable {
     }
 
     func resolveReference(_ request: ResolveReferenceRequest) async throws -> [ContextItem] { candidates }
-    func lookupTerm(_ request: LookupTermRequest) async throws -> [TermMatch] { [] }
+    func lookupTerm(_ request: LookupTermRequest) async throws -> [TermMatch] {
+        knownTerms
+            .filter { $0.lowercased() == request.heard.lowercased() }
+            .map { TermMatch(term: LexiconTerm(canonical: $0, kind: "product"), confidence: 1) }
+    }
     func recallPrompts(_ request: RecallPromptsRequest) async throws -> [PriorPrompt] { [] }
 
     func submitPrompt(_ artifact: PromptArtifact, options: SubmitOptions) async throws -> SubmitResult {
@@ -715,10 +726,43 @@ struct SessionTests {
         #expect(details.contains { $0.stringValue?.contains("must be one of") == true })
     }
 
-    @Test("teaches the transcriber a corrected term and pushes it to the provider")
-    func recordsTerms() async throws {
+    @Test("will not let an unconfirmed term become a spelling correction")
+    func unconfirmedTermIsBiasingOnly() async throws {
         let (session, provider, _, _) = try await makeSession()
         defer { withExtendedLifetime(session) {} }
+
+        // "cache" and "cash" are one edit apart, so similarity alone would accept this and an
+        // invented "cash" line would then ground against spoken "cache".
+        provider.connection.say("we should probably cache the avatar images")
+        await settle()
+
+        let recorded = provider.connection.callTool("record_term", .object([
+            "canonical": .string("cash"),
+            "kind": .string("product"),
+            "heard_as": .array([.string("cache")]),
+        ]))
+        let result = try await provider.connection.result(for: recorded)
+        #expect(result["corrections"]?.intValue == 0)
+        #expect(result["note"]?.stringValue?.contains("cannot be used as a spelling correction") == true)
+
+        let callId = provider.connection.callTool("draft_update", .object([
+            "operations": .array([
+                .object([
+                    "op": .string("upsert_line"),
+                    "section": .string("intent"),
+                    "text": .string("we should probably cash the avatar images"),
+                ]),
+            ]),
+        ]))
+        #expect(try await provider.connection.result(for: callId)["rejected"]?.arrayValue?.count == 1,
+                "an unconfirmed alias must not ground anything")
+    }
+
+    @Test("teaches the transcriber a corrected term and pushes it to the provider")
+    func recordsTerms() async throws {
+        let (session, provider, host, _) = try await makeSession()
+        defer { withExtendedLifetime(session) {} }
+        host.knownTerms = ["Flakeguard"]
         let recordCall = provider.connection.callTool("record_term", .object([
             "canonical": .string("Flakeguard"),
             "kind": .string("product"),

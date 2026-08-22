@@ -6,7 +6,7 @@
   "description": "A voice agent that turns spoken thinking into a finished prompt, in the speaker's own words.",
   "license": "MIT",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.18"
   },
   "scripts": {
     "bundle": "node tools/build-bundle.mjs",

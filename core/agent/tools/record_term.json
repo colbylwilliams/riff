@@ -1,11 +1,14 @@
 {
   "name": "record_term",
   "kind": "local",
-  "description": "Teach the lexicon a term the transcriber gets wrong, so it is right next time. Call it when you learn the correct form of something, whether from a lookup or because they spelled it out.",
+  "description": "Teach the lexicon a term the transcriber gets wrong, so it is right next time. Call it when you learn the correct form of something, whether from a lookup or because they spelled it out. A correction only becomes usable as a spelling fix if something here already knows the term; otherwise it still improves transcription, but keep writing what they actually said.",
   "parameters": {
     "type": "object",
     "additionalProperties": false,
-    "required": ["canonical", "kind"],
+    "required": [
+      "canonical",
+      "kind"
+    ],
     "properties": {
       "canonical": {
         "type": "string",
@@ -13,11 +16,22 @@
       },
       "kind": {
         "type": "string",
-        "enum": ["repository", "service", "product", "acronym", "person", "team", "file", "other"]
+        "enum": [
+          "repository",
+          "service",
+          "product",
+          "acronym",
+          "person",
+          "team",
+          "file",
+          "other"
+        ]
       },
       "heard_as": {
         "type": "array",
-        "items": { "type": "string" },
+        "items": {
+          "type": "string"
+        },
         "maxItems": 10,
         "description": "Ways the transcriber has rendered it wrong. These become automatic corrections."
       },
@@ -28,7 +42,11 @@
       },
       "scope": {
         "type": "string",
-        "enum": ["session", "user", "workspace"],
+        "enum": [
+          "session",
+          "user",
+          "workspace"
+        ],
         "default": "user",
         "description": "How widely the correction applies."
       }

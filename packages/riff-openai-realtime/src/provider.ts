@@ -132,7 +132,14 @@ export class OpenAIRealtimeProvider implements RealtimeProvider {
     });
 
     try {
-      await withTimeout(handshake, this.#options.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS, "session.created");
+      await withTimeout(
+        handshake,
+        this.#options.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS,
+        "session.created",
+        // Opening the transport is not the whole of connecting. Without this, an abort arriving
+        // after the socket is open is ignored until the handshake timeout expires.
+        request.signal,
+      );
     } catch (error) {
       await transport.close("handshake failed");
       throw new RiffProviderError("handshake_failed", (error as Error).message, { retryable: true, cause: error });
@@ -252,17 +259,31 @@ export class OpenAIRealtimeProvider implements RealtimeProvider {
   }
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+function withTimeout<T>(promise: Promise<T>, ms: number, what: string, signal?: AbortSignal): Promise<T> {
   return new Promise<T>((resolve, reject) => {
+    if (signal?.aborted) return reject(new Error("connection aborted"));
+
     const timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms waiting for ${what}`)), ms);
     timer.unref?.();
+
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Error("connection aborted"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+
+    const settle = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    };
+
     promise.then(
       (value) => {
-        clearTimeout(timer);
+        settle();
         resolve(value);
       },
       (error) => {
-        clearTimeout(timer);
+        settle();
         reject(error);
       },
     );

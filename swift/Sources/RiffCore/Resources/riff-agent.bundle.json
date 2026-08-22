@@ -337,7 +337,7 @@
     {
       "name": "record_term",
       "kind": "local",
-      "description": "Teach the lexicon a term the transcriber gets wrong, so it is right next time. Call it when you learn the correct form of something, whether from a lookup or because they spelled it out.",
+      "description": "Teach the lexicon a term the transcriber gets wrong, so it is right next time. Call it when you learn the correct form of something, whether from a lookup or because they spelled it out. A correction only becomes usable as a spelling fix if something here already knows the term; otherwise it still improves transcription, but keep writing what they actually said.",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -1172,5 +1172,5 @@
     "persistAudio": false,
     "redactSecretsFromTranscript": true
   },
-  "revision": "088816a6dabede89"
+  "revision": "6ddf5d9dd9b0026a"
 }

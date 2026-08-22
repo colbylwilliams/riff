@@ -2,8 +2,12 @@ import Foundation
 
 /// Vocabulary the transcriber gets wrong, plus the corrections that fix it.
 ///
-/// The lexicon is applied to both sides of every grounding comparison, so an alias can never make a
-/// paraphrase look grounded — it only lets "get hub" and "GitHub" recognize each other.
+/// A term does two separate jobs, and only one of them is dangerous. Every term biases
+/// transcription. Only a *corroborated* term also contributes a grounding alias, because aliases are
+/// applied to both sides of a comparison: an alias for a word that is not really the same word lets
+/// an invented line match different spoken words, which defeats the fidelity gate. Similarity is not
+/// evidence of sameness — "cache" and "cash" are one edit apart and mean nothing alike — so the
+/// agent cannot make an alias grounding-active by asserting it.
 public final class Lexicon: @unchecked Sendable {
     private var termsByKey: [String: LexiconTerm] = [:]
     private var aliases: [String: (tokens: [String], term: LexiconTerm)] = [:]
@@ -25,7 +29,10 @@ public final class Lexicon: @unchecked Sendable {
     }
 
     /// Adds or replaces a term. Aliases identical to the canonical form are ignored as no-ops.
-    public func add(_ term: LexiconTerm) {
+    ///
+    /// `corroborated: false` records the term for transcription biasing without letting its aliases
+    /// affect grounding. That is the setting for anything the agent asserts on its own.
+    public func add(_ term: LexiconTerm, corroborated: Bool = true) {
         let canonicalTokens = RiffText.tokenize(term.canonical)
         guard !canonicalTokens.isEmpty else { return }
         let key = canonicalTokens.joined(separator: " ")
@@ -41,6 +48,8 @@ public final class Lexicon: @unchecked Sendable {
             if merged.definition == nil { merged.definition = existing.definition }
         }
         termsByKey[key] = merged
+
+        guard corroborated else { return }
 
         for alias in merged.heardAs ?? [] {
             let aliasTokens = RiffText.tokenize(alias)
@@ -221,4 +230,10 @@ private func editDistance(_ a: [Character], _ b: [Character]) -> Int {
         previous = current
     }
     return previous[b.count]
+}
+
+
+/// Normalizes a spoken term for comparison as a lexicon key.
+public func termKey(_ value: String) -> String {
+    RiffText.tokenize(value).joined(separator: " ")
 }

@@ -69,8 +69,12 @@ export class GitHubHost implements RiffHost {
     if (direct.length > 0) return { candidates: direct };
 
     const kind = request.kind ?? "unknown";
-    if (kind === "person") return { candidates: await this.#searchUsers(request.phrase, request.limit ?? 5) };
-    if (kind === "repository") return { candidates: await this.#searchRepositories(request.phrase, request.limit ?? 5) };
+    if (kind === "person") {
+      return { candidates: await this.#searchUsers(request.phrase, request.limit ?? 5, request.signal) };
+    }
+    if (kind === "repository") {
+      return { candidates: await this.#searchRepositories(request.phrase, request.limit ?? 5, request.signal) };
+    }
 
     return { candidates: await this.#searchIssues(request) };
   }
@@ -92,6 +96,7 @@ export class GitHubHost implements RiffHost {
       const repositories = await this.#client.get<{ items: Array<{ full_name: string; description?: string }> }>(
         "/search/repositories",
         { q: `${heard} in:name`, per_page: 3 },
+        { signal: request.signal },
       );
       for (const repository of repositories.items ?? []) {
         matches.push({
@@ -106,10 +111,11 @@ export class GitHubHost implements RiffHost {
     }
 
     try {
-      const users = await this.#client.get<{ items: Array<{ login: string; name?: string }> }>("/search/users", {
-        q: `${heard} in:login in:name`,
-        per_page: 3,
-      });
+      const users = await this.#client.get<{ items: Array<{ login: string; name?: string }> }>(
+        "/search/users",
+        { q: `${heard} in:login in:name`, per_page: 3 },
+        { signal: request.signal },
+      );
       for (const user of users.items ?? []) {
         matches.push({
           canonical: user.login,
@@ -312,11 +318,11 @@ export class GitHubHost implements RiffHost {
     const query = [...qualifiers, ...(freeText ? [freeText] : [])].join(" ").trim();
     if (query.length === 0) return [];
 
-    const result = await this.#client.get<{ items: IssueLike[] }>("/search/issues", {
-      q: `${query} sort:updated-desc`,
-      per_page: request.limit ?? 5,
-      advanced_search: "true",
-    });
+    const result = await this.#client.get<{ items: IssueLike[] }>(
+      "/search/issues",
+      { q: `${query} sort:updated-desc`, per_page: request.limit ?? 5, advanced_search: "true" },
+      { signal: request.signal },
+    );
 
     return (result.items ?? []).map((item, index) => ({
       ...toContextItem(item, this.#options.repository),
@@ -324,10 +330,14 @@ export class GitHubHost implements RiffHost {
     }));
   }
 
-  async #searchRepositories(phrase: string, limit: number): Promise<ContextItem[]> {
+  async #searchRepositories(phrase: string, limit: number, signal?: AbortSignal): Promise<ContextItem[]> {
     const result = await this.#client.get<{
       items: Array<{ full_name: string; html_url: string; description?: string; updated_at?: string }>;
-    }>("/search/repositories", { q: `${meaningfulWords(phrase) || phrase} in:name`, per_page: limit });
+    }>(
+      "/search/repositories",
+      { q: `${meaningfulWords(phrase) || phrase} in:name`, per_page: limit },
+      { signal },
+    );
 
     return (result.items ?? []).map((repository) => ({
       referenceId: `repo-${repository.full_name}`,
@@ -341,10 +351,11 @@ export class GitHubHost implements RiffHost {
     }));
   }
 
-  async #searchUsers(phrase: string, limit: number): Promise<ContextItem[]> {
+  async #searchUsers(phrase: string, limit: number, signal?: AbortSignal): Promise<ContextItem[]> {
     const result = await this.#client.get<{ items: Array<{ login: string; html_url: string; name?: string }> }>(
       "/search/users",
       { q: meaningfulWords(phrase) || phrase, per_page: limit },
+      { signal },
     );
 
     return (result.items ?? []).map((user) => ({

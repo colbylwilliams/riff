@@ -18,9 +18,16 @@ const bundle: AgentBundle = loadBundle(
 class RecordingHost extends NullHost {
   candidates: ContextItem[] = [];
   submitted: PromptArtifact[] = [];
+  /** Vocabulary this world knows about, which is what corroborates a spelling correction. */
+  knownTerms: string[] = [];
 
   override async resolveReference() {
     return { candidates: this.candidates };
+  }
+
+  override async lookupTerm(request: { heard: string }) {
+    const match = this.knownTerms.find((term) => term.toLowerCase() === request.heard.toLowerCase());
+    return { matches: match ? [{ canonical: match, kind: "product", confidence: 1 }] : [] };
   }
 
   override async submitPrompt(artifact: PromptArtifact) {
@@ -367,6 +374,32 @@ describe("RiffSession", () => {
     assert.equal(result.draft.title, null);
   });
 
+  it("will not let an unconfirmed term become a spelling correction", async () => {
+    // "cache" and "cash" are one edit apart, so similarity alone would accept this and an invented
+    // "cash" line would then ground against spoken "cache".
+    provider.say("we should probably cache the avatar images");
+    await settle();
+
+    const recorded = provider.callTool("record_term", {
+      canonical: "cash",
+      kind: "product",
+      heard_as: ["cache"],
+    });
+    await settle();
+
+    const result = provider.resultFor(recorded);
+    assert.equal(result.corrections, 0);
+    assert.match(result.note, /cannot be used as a spelling correction/);
+
+    const callId = provider.callTool("draft_update", {
+      operations: [
+        { op: "upsert_line", section: "intent", text: "we should probably cash the avatar images" },
+      ],
+    });
+    await settle();
+    assert.equal(provider.resultFor(callId).rejected.length, 1, "an unconfirmed alias must not ground anything");
+  });
+
   it("refuses an alias that is a different word rather than a mishearing", async () => {
     provider.say("pull the numbers out of the database");
     await settle();
@@ -387,7 +420,8 @@ describe("RiffSession", () => {
     assert.equal(provider.resultFor(callId).rejected.length, 1);
   });
 
-  it("still accepts a genuine mishearing", async () => {
+  it("still accepts a genuine mishearing the world knows about", async () => {
+    host.knownTerms = ["Flakeguard"];
     const callId = provider.callTool("record_term", {
       canonical: "Flakeguard",
       kind: "product",
@@ -633,6 +667,7 @@ describe("RiffSession", () => {
   });
 
   it("teaches the transcriber a corrected term and pushes it to the provider", async () => {
+    host.knownTerms = ["Flakeguard"];
     const callId = provider.callTool("record_term", {
       canonical: "Flakeguard",
       kind: "product",

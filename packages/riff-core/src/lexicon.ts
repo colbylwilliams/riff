@@ -11,16 +11,20 @@ export interface CanonicalizeResult {
 /**
  * Vocabulary the transcriber gets wrong, plus the corrections that fix it.
  *
- * The lexicon is applied to both sides of every grounding comparison, so an alias can never make a
- * paraphrase look grounded — it only lets "get hub" and "GitHub" recognize each other. Canonical
- * forms are also compiled into transcription biasing hints at connect time.
+ * A term does two separate jobs, and only one of them is dangerous. Every term biases
+ * transcription. Only a *corroborated* term also contributes a grounding alias, because aliases are
+ * applied to both sides of a comparison: an alias for a word that is not really the same word lets
+ * an invented line match different spoken words, which defeats the fidelity gate. Similarity is not
+ * evidence of sameness — "cache" and "cash" are one edit apart and mean nothing alike — so the
+ * agent cannot make an alias grounding-active by asserting it.
  */
 export class Lexicon {
   #terms = new Map<string, LexiconTerm>();
-  /** Normalized alias phrase, space joined, to the canonical token sequence. */
+  /** Normalized alias phrase, space joined, to the canonical token sequence. Corroborated only. */
   #aliases = new Map<string, { tokens: string[]; term: LexiconTerm }>();
   #maxAliasLength = 1;
 
+  /** Seeded and host-supplied vocabulary is curated, so it is corroborated by construction. */
   constructor(terms: Iterable<LexiconTerm> = []) {
     for (const term of terms) this.add(term);
   }
@@ -33,8 +37,13 @@ export class Lexicon {
     return [...this.#terms.values()];
   }
 
-  /** Adds or replaces a term. Aliases identical to the canonical form are ignored as no-ops. */
-  add(term: LexiconTerm): void {
+  /**
+   * Adds or replaces a term. Aliases identical to the canonical form are ignored as no-ops.
+   *
+   * `corroborated: false` records the term for transcription biasing without letting its aliases
+   * affect grounding. That is the setting for anything the agent asserts on its own.
+   */
+  add(term: LexiconTerm, options: { corroborated?: boolean } = {}): void {
     const canonicalTokens = tokenize(term.canonical).map((t) => t.norm);
     if (canonicalTokens.length === 0) return;
     const key = canonicalTokens.join(" ");
@@ -48,6 +57,8 @@ export class Lexicon {
         }
       : term;
     this.#terms.set(key, merged);
+
+    if (options.corroborated === false) return;
 
     for (const alias of merged.heardAs ?? []) {
       const aliasTokens = tokenize(alias).map((t) => t.norm);

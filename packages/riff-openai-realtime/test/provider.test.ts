@@ -264,6 +264,31 @@ describe("endpoint construction", () => {
 });
 
 describe("connection teardown", () => {
+  it("gives up when the abort arrives after the socket is open", async () => {
+    let socket: FakeWebSocket | null = null;
+    const controller = new AbortController();
+    const provider = new OpenAIRealtimeProvider({
+      credentials: apiKeyCredentials("sk-test-key"),
+      createWebSocket: (url, protocols) => (socket = new FakeWebSocket(url, protocols)),
+      // Long enough that passing this test cannot be the timeout firing.
+      handshakeTimeoutMs: 30_000,
+    });
+
+    const connecting = provider.connect({
+      instructions: "",
+      tools: [],
+      session: bundle.session,
+      signal: controller.signal,
+    });
+
+    // Socket open, but session.created never arrives.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.ok(socket, "the socket should be open by now");
+    controller.abort();
+
+    await assert.rejects(connecting, /aborted/);
+  });
+
   it("fails immediately when the signal is already aborted", async () => {
     const provider = new OpenAIRealtimeProvider({
       credentials: apiKeyCredentials("sk-test-key"),
