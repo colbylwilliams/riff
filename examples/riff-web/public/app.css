@@ -645,6 +645,67 @@ h2 {
   color: var(--muted);
 }
 
+/* ── keys ───────────────────────────────────────────────────────────────── */
+
+.field {
+  display: block;
+  margin-top: 16px;
+}
+
+.field > span {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 5px;
+  font-size: 11px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.field em {
+  font-style: normal;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--verbatim);
+}
+
+.field em[data-set="false"] {
+  color: var(--muted);
+}
+
+.field input {
+  width: 100%;
+  padding: 9px 13px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+.field input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.keys-problem {
+  margin: 14px 0 0;
+  padding: 9px 12px;
+  border: 1px solid color-mix(in srgb, var(--rejected) 45%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--rejected) 10%, var(--panel));
+  font-size: 12px;
+  white-space: pre-line;
+}
+
+.keys-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 20px;
+}
+
 @keyframes rise {
   from { opacity: 0; transform: translateY(5px); }
   to { opacity: 1; transform: none; }

@@ -34,6 +34,19 @@ const ui = {
   issueMode: document.getElementById("issue-mode"),
   allowIssues: document.getElementById("allow-issues"),
   hostPill: document.getElementById("host-pill"),
+  keys: document.getElementById("keys"),
+  keysForm: document.getElementById("keys-form"),
+  keysOpen: document.getElementById("open-keys"),
+  keysClose: document.getElementById("keys-close"),
+  keysForget: document.getElementById("keys-forget"),
+  keysProblem: document.getElementById("keys-problem"),
+  keysSave: document.getElementById("keys-save"),
+  keysSaveLabel: document.getElementById("keys-save-label"),
+  openaiKey: document.getElementById("openai-key"),
+  openaiStatus: document.getElementById("openai-status"),
+  githubKey: document.getElementById("github-key"),
+  githubStatus: document.getElementById("github-status"),
+  githubRepo: document.getElementById("github-repo"),
   agentAudio: document.getElementById("agent-audio"),
   sent: document.getElementById("sent"),
   sentTitle: document.getElementById("sent-title"),
@@ -509,6 +522,93 @@ function startMeter(stream) {
   return { audioContext, stopMeter: () => cancelAnimationFrame(frame) };
 }
 
+/* ── credentials ─────────────────────────────────────────────────────────── */
+
+/**
+ * Reflects what the server can currently do.
+ *
+ * Called at load and again after keys change, so pasting one takes effect without a reload. It only
+ * ever reads whether a credential is present — the values stay on the server.
+ */
+function applyConfig(config) {
+  liveAvailable = Boolean(config.live);
+  githubAvailable = Boolean(config.github?.available);
+
+  const liveInput = ui.liveMode.querySelector("input");
+  liveInput.disabled = !liveAvailable;
+  ui.liveMode.toggleAttribute("aria-disabled", !liveAvailable);
+  ui.liveMode.title = liveAvailable
+    ? "Talk to it for real"
+    : "Add an OpenAI API key under keys to enable live mode";
+
+  // Falling back without saying so would look like the key had been forgotten.
+  if (!liveAvailable && liveInput.checked) {
+    document.querySelector('input[value="scripted"]').checked = true;
+    ui.micLabel.textContent = defaultMicLabel();
+  }
+
+  const repository = config.github?.repository;
+  ui.hostPill.textContent = githubAvailable ? `host: ${repository}` : "host: demo";
+  ui.hostPill.title = githubAvailable
+    ? `References resolve against ${repository}, through the server so the token stays there`
+    : "A canned world: one PR, one motif. Add a GitHub token under keys to use a real repository";
+
+  // Sending is a side effect someone can see, so filing for real is opt-in every time.
+  ui.issueMode.hidden = !githubAvailable;
+  if (githubAvailable) {
+    ui.issueMode.title = `Off, sending is a dry run. On, it files an issue in ${repository}`;
+  } else {
+    ui.allowIssues.checked = false;
+  }
+
+  describeCredential(ui.openaiStatus, config.openai?.source);
+  describeCredential(ui.githubStatus, config.github?.source, config.github?.login);
+  if (repository) ui.githubRepo.placeholder = repository;
+}
+
+function describeCredential(element, source, login) {
+  const set = Boolean(source);
+  element.dataset.set = String(set);
+  element.textContent = set
+    ? `${login ? `${login}, ` : ""}from the ${source === "pasted" ? "page" : "environment"}`
+    : "not set";
+}
+
+async function saveKeys(body) {
+  ui.keysProblem.hidden = true;
+  ui.keysSave.disabled = true;
+  ui.keysSaveLabel.textContent = "Checking…";
+
+  try {
+    const response = await fetch("/api/riff/credentials", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const result = await response.json();
+    applyConfig(result);
+
+    if (result.problems?.length) {
+      ui.keysProblem.textContent = result.problems.join("\n");
+      ui.keysProblem.hidden = false;
+      return false;
+    }
+
+    // Only clear the inputs once the server has taken them, so a rejected key can be corrected.
+    ui.openaiKey.value = "";
+    ui.githubKey.value = "";
+    return true;
+  } catch (error) {
+    ui.keysProblem.textContent = error.message;
+    ui.keysProblem.hidden = false;
+    return false;
+  } finally {
+    ui.keysSave.disabled = false;
+    ui.keysSaveLabel.textContent = "Save";
+  }
+}
+
+
 /* ── chrome ──────────────────────────────────────────────────────────────── */
 
 function reset() {
@@ -563,6 +663,29 @@ function paragraph(text, className) {
 ui.mic.addEventListener("click", () => (run ? stop() : start()));
 ui.interrupt.addEventListener("click", () => run?.session.interrupt());
 ui.sentClose.addEventListener("click", () => (ui.sent.hidden = true));
+
+ui.keysOpen.addEventListener("click", () => {
+  ui.keys.hidden = false;
+  ui.openaiKey.focus();
+});
+ui.keysClose.addEventListener("click", () => (ui.keys.hidden = true));
+ui.keys.addEventListener("click", (event) => {
+  if (event.target === ui.keys) ui.keys.hidden = true;
+});
+
+ui.keysForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const body = { repository: ui.githubRepo.value };
+  // An untouched field means "leave it alone", which is not the same as "clear it".
+  if (ui.openaiKey.value.trim()) body.openaiApiKey = ui.openaiKey.value;
+  if (ui.githubKey.value.trim()) body.githubToken = ui.githubKey.value;
+
+  if (await saveKeys(body)) ui.keys.hidden = true;
+});
+
+ui.keysForget.addEventListener("click", () =>
+  saveKeys({ openaiApiKey: "", githubToken: "", repository: "" }),
+);
 ui.toggleMarkdown.addEventListener("click", () => {
   const showingMarkdown = ui.markdown.hidden;
   ui.markdown.hidden = !showingMarkdown;
@@ -587,24 +710,6 @@ const config = await fetch("/api/riff/config")
   .then((response) => response.json())
   .catch(() => ({ live: false }));
 
-liveAvailable = Boolean(config.live);
-if (!liveAvailable) {
-  ui.liveMode.querySelector("input").disabled = true;
-  ui.liveMode.setAttribute("aria-disabled", "true");
-  ui.liveMode.title = "Set OPENAI_API_KEY before starting the server to enable live mode";
-}
-
-githubAvailable = Boolean(config.github?.available);
-ui.hostPill.textContent = githubAvailable ? `host: ${config.github.repository}` : "host: demo";
-ui.hostPill.title = githubAvailable
-  ? `References resolve against ${config.github.repository}, through the server so the token stays there`
-  : "A canned world: one PR, one motif. Set GITHUB_TOKEN to resolve against a real repository";
-
-// Sending is a side effect someone can see, so filing for real is opt-in every time.
-ui.issueMode.hidden = !githubAvailable;
-if (githubAvailable) {
-  ui.issueMode.title = `Off, sending is a dry run. On, it files an issue in ${config.github.repository}`;
-}
-
+applyConfig(config);
 renderDraft(null);
 setFidelity(0);

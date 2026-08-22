@@ -262,8 +262,8 @@ npm run demo                     # http://localhost:4173
 
 It replays the conversation above through the real engine — real ledger, real grounding check, real
 render — and shows the draft assembling itself line by line, including a paraphrase being rejected.
-Set `OPENAI_API_KEY` before starting it to enable the microphone and talk to it yourself. See
-[examples/riff-web](examples/riff-web).
+Click **keys** in the page to paste an OpenAI key and talk to it yourself, or a GitHub token to have
+it resolve references against a real repository. See [examples/riff-web](examples/riff-web).
 
 ### TypeScript
 

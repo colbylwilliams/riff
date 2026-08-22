@@ -31,6 +31,7 @@
         <span id="state-pill" class="pill" data-state="idle">idle</span>
         <span id="host-pill" class="pill" title="Which world Riff looks things up in">host: demo</span>
         <span id="take-label" class="muted"></span>
+        <button id="open-keys" class="ghost" type="button">keys</button>
       </div>
 
       <div class="fidelity" title="Share of the prompt body that is provably the speaker's">
@@ -108,6 +109,47 @@
       <span class="chip chip--motif">motif</span>
       <span class="chip chip--derived">derived</span>
       <span class="chip chip--rejected">rejected</span>
+    </div>
+
+    <div id="keys" class="sheet" hidden>
+      <form id="keys-form" class="sheet-card">
+        <div class="sheet-head">
+          <h3>Keys</h3>
+          <button id="keys-close" class="ghost" type="button">close</button>
+        </div>
+
+        <p class="sent-note">
+          These are posted once to the demo server on this machine, which keeps them in memory for as
+          long as it is running. They are never stored, never sent back to this page, and never used
+          from it — the browser only ever gets a short-lived OpenAI secret and answers to host
+          questions. Leave a field blank to keep what is already set; clear a set one to forget it.
+        </p>
+
+        <label class="field">
+          <span>OpenAI API key <em id="openai-status">not set</em></span>
+          <input id="openai-key" type="password" autocomplete="off" spellcheck="false"
+            placeholder="sk-…  enables live mic" />
+        </label>
+
+        <label class="field">
+          <span>GitHub token <em id="github-status">not set</em></span>
+          <input id="github-key" type="password" autocomplete="off" spellcheck="false"
+            placeholder="ghp_…  resolves against a real repository" />
+        </label>
+
+        <label class="field">
+          <span>Repository</span>
+          <input id="github-repo" type="text" autocomplete="off" spellcheck="false"
+            placeholder="owner/name  — detected from the origin remote when blank" />
+        </label>
+
+        <p id="keys-problem" class="keys-problem" hidden></p>
+
+        <div class="keys-actions">
+          <button id="keys-save" class="mic" type="submit"><span id="keys-save-label">Save</span></button>
+          <button id="keys-forget" class="ghost" type="button">Forget both</button>
+        </div>
+      </form>
     </div>
 
     <div id="sent" class="sheet" hidden>

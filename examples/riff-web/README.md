@@ -15,16 +15,25 @@ npm run demo                     # http://localhost:4173
 That runs **scripted mode** against a canned world, which needs no API key, no network, and no
 microphone.
 
+To add live mic or a real repository, click **keys** in the header and paste them in. The page posts
+them once to the server on your machine, which holds them in memory for as long as it is running,
+checks each one against the API it is for so a bad paste fails next to the field you typed it into,
+and never writes them anywhere or sends them back. Environment variables still work if you prefer
+them, and the page says which source a credential came from:
+
 ```bash
 OPENAI_API_KEY=sk-... npm run demo             # adds live mode
 GITHUB_TOKEN=$(gh auth token) npm run demo     # resolves against a real repository
 ```
 
+The server listens on loopback only and refuses cross-origin requests, because it holds credentials
+and a page on another origin could otherwise spend them without ever reading the reply.
+
 ## The host
 
-With no `GITHUB_TOKEN`, references resolve against `DemoHost` — one PR, one motif, a destination
-that goes nowhere. With a token, `GitHubHost` takes over and "the PR I just opened" resolves against
-a real repository, detected from the `origin` remote or set with `GITHUB_REPOSITORY`.
+With no GitHub token, references resolve against `DemoHost` — one PR, one motif, a destination that
+goes nowhere. With one, `GitHubHost` takes over and "the PR I just opened" resolves against a real
+repository, detected from the `origin` remote or typed into the keys panel.
 
 **The host runs on the server, not in the page.** A host is whatever the embedding application knows
 about the world, and it runs wherever the session runs — which here is the browser, so a
@@ -98,7 +107,7 @@ to the agent bundle, the grounding config, or a render profile has quietly broke
 ## Files
 
 ```
-server.mjs               static files, the agent bundle, POST /api/riff/token, and the GitHub host
+server.mjs               static files, the agent bundle, credentials, tokens, and the GitHub host
 verify.mjs               the same script, headless, as an assertion
 public/
   index.html             layout and the import map
