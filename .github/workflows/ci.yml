@@ -27,3 +27,13 @@ jobs:
       - uses: actions/checkout@v4
       # Runs the same conformance cases as the TypeScript suite.
       - run: swift test --package-path swift
+
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup component add clippy rustfmt
+      - run: cargo fmt --check --manifest-path rust/Cargo.toml
+      - run: cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
+      # Runs the same conformance cases as the TypeScript and Swift suites.
+      - run: cargo test --manifest-path rust/Cargo.toml

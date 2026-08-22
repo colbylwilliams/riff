@@ -15,7 +15,8 @@
     "clean": "tsc --build --clean",
     "test": "npm run bundle:check && npm run build && node --test \"packages/*/test/**/*.test.ts\"",
     "typecheck": "tsc --build",
-    "swift:test": "swift test --package-path swift"
+    "swift:test": "swift test --package-path swift",
+    "rust:test": "cargo test --manifest-path rust/Cargo.toml"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",

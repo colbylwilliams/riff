@@ -15,9 +15,10 @@ why, so that changes to those files are made deliberately.
 | `agent.json` | The manifest: section order, tool list, grounding, rendering, policy |
 
 `tools/build-bundle.mjs` composes these into `core/dist/riff-agent.bundle.json` and copies it into
-the Swift package. The build is also a linter: it rejects a file that exists but is not listed in the
-manifest, sections listed out of order, duplicate tool names, a tool never mentioned in the tools
-instruction section, an undefined render profile, and any manifest with `autoSubmit` set to true.
+the Swift package and the Rust crate. The build is also a linter: it rejects a file that exists but
+is not listed in the manifest, sections listed out of order, duplicate tool names, a tool never
+mentioned in the tools instruction section, an undefined render profile, and any manifest with
+`autoSubmit` set to true.
 
 The composed instructions are about 2,700 tokens. That is a deliberate ceiling. Realtime models
 degrade with long system prompts, and the reasoning behind each rule belongs in this document rather
@@ -162,6 +163,6 @@ retry, not the conversation.
 
 1. Edit the files in `core/agent`.
 2. Run `npm run bundle`. It will refuse changes that break the manifest's invariants.
-3. Run `npm test` and `swift test --package-path swift`. Behavioral changes usually need a
+3. Run `npm test`, `swift test --package-path swift`, and `cargo test --manifest-path rust/Cargo.toml`. Behavioral changes usually need a
    conformance case ([conformance.md](conformance.md)).
 4. Commit the regenerated bundle. CI checks that it matches its source.

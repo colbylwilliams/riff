@@ -9,6 +9,7 @@ Cross-cutting rules for AI coding agents working in this repository. Pair this g
 | [`core/`](core/) | **The portable contract.** The shared agent definition, the JSON Schemas, and the conformance cases every binding reproduces. Not implementation. See [Working in `core/`](#working-in-core). |
 | [`packages/`](packages/) | The TypeScript binding: [`riff-core`](packages/riff-core/) (engine), [`riff-openai-realtime`](packages/riff-openai-realtime/) (provider), [`riff-github`](packages/riff-github/) (host). |
 | [`swift/`](swift/) | The Swift binding: `RiffCore` (the same engine, natively), `RiffOpenAIRealtime`, and `RiffAudio` (capture, playback, echo cancellation). |
+| [`rust/`](rust/) | The Rust binding: [`riff-core`](rust/riff-core/) (the same engine again) and [`riff-openai-realtime`](rust/riff-openai-realtime/). No dependencies and no runtime — see [its README](rust/README.md). |
 | [`tools/build-bundle.mjs`](tools/build-bundle.mjs) | Compiles `core/agent` into the committed bundle, validates the manifest, and mirrors the bundle and conformance cases into each binding's build. |
 | [`docs/`](docs/) | Architecture, the grounding algorithm, the artifact contract, the host bridge, providers, conformance, security. Design rationale lives here. |
 
@@ -40,18 +41,19 @@ These are product and security properties, not preferences. The breaking-changes
 
 ```sh
 npm install
-npm run bundle:check              # committed bundle and mirrored cases match core/agent
-npm run build                     # bundle + tsc --build
-npm test                          # bundle:check + build + every TypeScript suite
-swift test --package-path swift   # the same conformance cases, natively
+npm run bundle:check                          # committed bundle and mirrored cases match core/agent
+npm run build                                 # bundle + tsc --build
+npm test                                      # bundle:check + build + every TypeScript suite
+swift test --package-path swift               # the same conformance cases, natively
+cargo test --manifest-path rust/Cargo.toml    # and again, natively
 ```
 
 `npm test` is the gate that matters most: it fails when the committed bundle has drifted from `core/agent`, so no binding can quietly ship a different agent than the one in source.
 
 > [!IMPORTANT]
-> **The Swift suite needs macOS.** `RiffAudio` imports `AVFoundation` unguarded, so the package does not build on Linux — [CI](.github/workflows/ci.yml) runs it on `macos-15`, and the Linux devcontainer cannot. When you change engine behavior from a container, say plainly in the PR that the Swift half was validated by CI rather than locally; never assume parity you did not observe.
+> **The Swift suite needs macOS.** `RiffAudio` imports `AVFoundation` unguarded, so the package does not build on Linux — [CI](.github/workflows/ci.yml) runs it on `macos-15`, and the Linux devcontainer cannot. The TypeScript and Rust suites run anywhere. When you change engine behavior from a container, say plainly in the PR that the Swift half was validated by CI rather than locally; never assume parity you did not observe.
 
-Run both suites locally before the initial push and before declaring a PR ready. There is no linter or formatter configured — match the surrounding style rather than reformatting a file you touched.
+Run every suite locally before the initial push and before declaring a PR ready. There is no linter or formatter configured for the TypeScript and Swift halves — match the surrounding style rather than reformatting a file you touched. Rust is the exception: it has one canonical formatter and linter, so `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` gate [CI](.github/workflows/ci.yml) and must pass before a push.
 
 ## Working in `core/`
 
@@ -87,14 +89,14 @@ Host-internal refactors, provider wire details, transport concerns, and anything
 
 ## Adding a platform binding
 
-A binding is a native implementation of the engine plus a provider. Rust and Kotlin are the next two; the rules below are what keeps each new implementation from becoming a new dialect.
+A binding is a native implementation of the engine plus a provider. Kotlin is the next one; the rules below are what keeps each new implementation from becoming a new dialect.
 
 - **Ship the agent definition, do not restate it.** Vendor [`core/dist/riff-agent.bundle.json`](core/dist/riff-agent.bundle.json) and read instructions, tools, thresholds, render profiles, and policy from it. Every rule that governs the agent is in that file. A threshold, a filler word, or an instruction retyped into your source is a divergence waiting to happen.
-- **Extend [`build-bundle.mjs`](tools/build-bundle.mjs), don't copy by hand.** Its `outputs` and conformance-mirror targets are currently Swift-only. A new binding adds its bundle destination and its test-resource directory there, so `npm run bundle:check` covers it and drift becomes impossible rather than merely discouraged. This is what lets a binding build without a Node toolchain.
+- **Extend [`build-bundle.mjs`](tools/build-bundle.mjs), don't copy by hand.** A new binding adds its bundle destination to `outputs` and its test-resource directory to `conformanceTargets`, so `npm run bundle:check` covers it and drift becomes impossible rather than merely discouraged. This is what lets a binding build without a Node toolchain.
 - **Validate on load.** Reject an out-of-range threshold, an undefined render profile, and `autoSubmit: true`. This is the last line of defense against a binding running a modified agent, and it is not optional.
 - **Run the whole suite.** Not a subset. Mirror the case files rather than transcribing them.
-- **Then cover the behavior the cases cannot express.** These are the divergences that data cannot catch, and each has already been a real bug: the [single-entrance ledger rule](#invariants); a turn's tool calls dispatched as one batch producing exactly one continuation, with the in-flight flag set when the batch arrives and cleared when the continuation starts (never scoped to the dispatch — that is precisely where an async binding diverges from an event-driven one); interruption cancelling the response and dropping buffered audio; credentials stripped before storage; and submission refused when the policy's required sections are missing. [`SessionTests.swift`](swift/Tests/RiffCoreTests/SessionTests.swift) and [`session.test.ts`](packages/riff-core/test/session.test.ts) are the templates.
-- **Keep the module seams parallel.** The TypeScript and Swift engines are deliberately the same decomposition — ledger, lexicon, grounding, draft/takes, tools, render, session. Follow it. Reviewers diff bindings against each other, and a binding that reorganizes the seams makes every future divergence harder to see.
+- **Then cover the behavior the cases cannot express.** These are the divergences that data cannot catch, and each has already been a real bug: the [single-entrance ledger rule](#invariants); a turn's tool calls dispatched as one batch producing exactly one continuation, with the in-flight flag set when the batch arrives and cleared when the continuation starts (never scoped to the dispatch — that is precisely where an async binding diverges from an event-driven one); interruption cancelling the response and dropping buffered audio; credentials stripped before storage; and submission refused when the policy's required sections are missing. [`SessionTests.swift`](swift/Tests/RiffCoreTests/SessionTests.swift), [`session.test.ts`](packages/riff-core/test/session.test.ts), and [`session.rs`](rust/riff-core/tests/session.rs) are the templates.
+- **Keep the module seams parallel.** The TypeScript, Swift, and Rust engines are deliberately the same decomposition — ledger, lexicon, grounding, draft/takes, tools, render, session. Follow it. Reviewers diff bindings against each other, and a binding that reorganizes the seams makes every future divergence harder to see.
 - **Add a CI job.** A binding that is not in [`ci.yml`](.github/workflows/ci.yml) is not held to the suite. Note the toolchain it needs — Swift is macOS-only for the reason described above; Rust and Kotlin run on Linux and belong in the devcontainer.
 
 ## Pull requests
@@ -122,8 +124,8 @@ When a change touches the same files as an in-flight PR, stack it instead of rac
 ## Repository conventions
 
 - **This repository is public; treat everything in it as published.** Riff ships under [MIT](LICENSE) and is read by people with no access to any internal system. Don't describe private code, internal services, or unreleased plans anywhere in the tree — including commit messages, PR descriptions, and issues — and don't make the build depend on anything an outside reader cannot resolve. This applies to tooling config as much as to prose: a devcontainer feature, base image, or registry that only answers from behind the fence breaks the repo for everyone who clones it. The test is whether someone outside can pull it, not who built it — a published artifact is fine even when the source repository behind it is private. When a tool really is internal-only, keep it in untracked local config rather than in the tree.
-- **Generated files are generated.** [`core/dist/riff-agent.bundle.json`](core/dist/riff-agent.bundle.json), [`swift/Sources/RiffCore/Resources/riff-agent.bundle.json`](swift/Sources/RiffCore/Resources/), and the mirrored cases under [`swift/Tests/RiffCoreTests/Resources/`](swift/Tests/RiffCoreTests/Resources/) are outputs of `npm run bundle`. Edit `core/agent` and regenerate; never patch a copy. They are committed on purpose so a binding can build without Node.
-- **The engine has no third-party runtime dependencies, in any binding.** `@riff/core` has none, `RiffCore` has none, and the provider and host packages depend only on the engine. Keep it that way: the engine is embedded into other people's applications, and a dependency there is a dependency they did not choose. A new third-party dependency needs a stated reason in the PR.
+- **Generated files are generated.** [`core/dist/riff-agent.bundle.json`](core/dist/riff-agent.bundle.json), the vendored bundles under [`swift/Sources/RiffCore/Resources/`](swift/Sources/RiffCore/Resources/) and [`rust/riff-core/resources/`](rust/riff-core/resources/), and the mirrored cases under [`swift/Tests/RiffCoreTests/Resources/`](swift/Tests/RiffCoreTests/Resources/) and [`rust/riff-core/tests/resources/`](rust/riff-core/tests/resources/) are outputs of `npm run bundle`. Edit `core/agent` and regenerate; never patch a copy. They are committed on purpose so a binding can build without Node.
+- **The engine has no third-party runtime dependencies, in any binding.** `@riff/core` has none, `RiffCore` has none, `riff-core` has none, and the provider and host packages depend only on the engine. Keep it that way: the engine is embedded into other people's applications, and a dependency there is a dependency they did not choose. A new third-party dependency needs a stated reason in the PR.
 - **Thresholds, filler words, labels, and policy live in [`agent.json`](core/agent/agent.json)** — never as constants in a binding. If you find yourself typing a number that governs grounding or rendering into TypeScript, Swift, Rust, or Kotlin, it belongs in the manifest.
 - **Provider wire formats stay inside the provider.** Nothing above [`RealtimeProvider`](docs/providers.md) knows an event name, a field name, or a transport detail from any vendor. That seam is what lets the speech engine change without changing anything a speaker can observe.
 - **Riff is a library, not an app.** It does not own the microphone, the screen, credentials, or storage. When a change needs one of those, the answer is an interface the embedder implements, not a dependency the engine acquires.

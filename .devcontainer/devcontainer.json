@@ -10,8 +10,8 @@
   "features": {
     "ghcr.io/devcontainers/features/git:1": {},
     "ghcr.io/devcontainers/features/github-cli:1": {},
-    // Rust and Kotlin bindings are next, and both build on Linux. Installing the toolchains now
-    // means the container is ready when those land instead of needing a rebuild mid-task.
+    // Rust builds and tests on Linux, so the toolchain belongs here and the binding's CI job runs
+    // on ubuntu. Kotlin is next and will do the same.
     "ghcr.io/devcontainers/features/rust:1": {},
     "ghcr.io/devcontainers/features/java:1": {
       "version": "21",
