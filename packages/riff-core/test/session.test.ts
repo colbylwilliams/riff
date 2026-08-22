@@ -282,6 +282,51 @@ describe("RiffSession", () => {
     assert.ok(events.some((event) => event.type === "submitted"));
   });
 
+  it("starts a fresh take after submitting, so nothing lands in a prompt already sent", async () => {
+    provider.say("the export button does nothing past a thousand rows");
+    await settle();
+    provider.callTool("draft_update", {
+      operations: [
+        { op: "upsert_line", section: "intent", text: "the export button does nothing past a thousand rows" },
+      ],
+    });
+    await settle();
+    const submittedTakeId = session.book.activeId;
+
+    provider.callTool("submit_prompt", {});
+    await settle();
+
+    provider.say("also the avatars flicker on every scroll");
+    await settle();
+    const callId = provider.callTool("draft_update", {
+      operations: [{ op: "upsert_line", section: "intent", text: "the avatars flicker on every scroll" }],
+    });
+    await settle();
+
+    const draft = provider.resultFor(callId).draft;
+    assert.notEqual(draft.take_id, submittedTakeId, "a submitted take must not keep receiving lines");
+    assert.equal(draft.sections.intent.length, 1);
+    assert.equal(session.book.get(submittedTakeId!)?.status, "submitted");
+  });
+
+  it("keeps the take open when asked to", async () => {
+    provider.say("the export button does nothing past a thousand rows");
+    await settle();
+    provider.callTool("draft_update", {
+      operations: [
+        { op: "upsert_line", section: "intent", text: "the export button does nothing past a thousand rows" },
+      ],
+    });
+    await settle();
+    const takeId = session.book.activeId;
+
+    provider.callTool("submit_prompt", { keep_open: true });
+    await settle();
+
+    assert.equal(session.book.activeId, takeId);
+    assert.equal(session.book.get(takeId!)?.status, "drafting");
+  });
+
   it("refuses to submit a take with nothing in it", async () => {
     const callId = provider.callTool("submit_prompt", {});
     await settle();

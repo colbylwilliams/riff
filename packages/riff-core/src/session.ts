@@ -292,6 +292,8 @@ export class RiffSession {
         break;
 
       case "response.started":
+        // The continuation for a tool batch has begun, so the batch is no longer pending.
+        this.#toolsInFlight = false;
         this.#agentTranscript = "";
         this.#setState("thinking");
         break;
@@ -312,6 +314,9 @@ export class RiffSession {
         break;
 
       case "tool.calls":
+        // Set on receipt rather than inside the dispatch, so the guard below does not depend on
+        // whether provider events are delivered while the dispatch is still running.
+        this.#toolsInFlight = true;
         void this.#runTools(event.calls);
         break;
 
@@ -321,6 +326,7 @@ export class RiffSession {
         break;
 
       case "error":
+        this.#toolsInFlight = false;
         this.#emit({
           type: "error",
           error: { code: event.error.code, message: event.error.message, retryable: event.error.retryable },
@@ -350,7 +356,6 @@ export class RiffSession {
     const connection = this.#connection;
     if (!registry || !connection || calls.length === 0) return;
 
-    this.#toolsInFlight = true;
     try {
       await Promise.all(
         calls.map(async ({ callId, name, argumentsJson }) => {
@@ -376,8 +381,9 @@ export class RiffSession {
           }
         }),
       );
-    } finally {
+    } catch (error) {
       this.#toolsInFlight = false;
+      throw error;
     }
 
     connection.requestResponse();

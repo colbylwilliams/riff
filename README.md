@@ -330,7 +330,7 @@ connection down, by design — a half-live session with an open microphone is wo
 ## Testing
 
 ```bash
-npm test                      # 85 tests: engine, provider, host, conformance
+npm test                      # 97 tests: engine, provider, host, conformance
 swift test --package-path swift   # the same conformance suite, natively
 ```
 

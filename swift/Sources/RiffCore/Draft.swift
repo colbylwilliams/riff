@@ -126,6 +126,7 @@ public final class Take: @unchecked Sendable {
 
     private var linesById: [String: Line] = [:]
     private var contextById: [String: ContextItem] = [:]
+    private var contextOrder: [String] = []
     private var pastLines: [Line] = []
     private var sequence = 0
 
@@ -158,8 +159,10 @@ public final class Take: @unchecked Sendable {
 
     public func line(_ id: String) -> Line? { linesById[id] }
 
+    /// In the order the speaker brought each reference up, matching the reference implementation.
+    /// Sorting by id instead would reorder the rendered context block, since ids come from the host.
     public func context() -> [ContextItem] {
-        contextById.keys.sorted().compactMap { contextById[$0] }
+        contextOrder.compactMap { contextById[$0] }
     }
 
     /// Lines replaced by a correction. Kept so a change of mind can be walked back.
@@ -178,11 +181,16 @@ public final class Take: @unchecked Sendable {
         return true
     }
 
-    public func attach(_ item: ContextItem) { contextById[item.referenceId] = item }
+    public func attach(_ item: ContextItem) {
+        if contextById[item.referenceId] == nil { contextOrder.append(item.referenceId) }
+        contextById[item.referenceId] = item
+    }
 
     @discardableResult
     public func detach(_ referenceId: String) -> Bool {
-        contextById.removeValue(forKey: referenceId) != nil
+        guard contextById.removeValue(forKey: referenceId) != nil else { return false }
+        contextOrder.removeAll { $0 == referenceId }
+        return true
     }
 
     public var isEmpty: Bool { linesById.isEmpty && contextById.isEmpty }

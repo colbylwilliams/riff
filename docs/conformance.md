@@ -15,8 +15,12 @@ changed rejected, invented detail rejected, sentences spanning two and four utte
 corrections, one sentence selected out of a long turn, an empty ledger, a content-free line, and the
 looser bar a title is held to.
 
-**Rendering.** The exact bytes a finished prompt renders to, under both profiles. A prompt captured
-on a phone and one captured at a desk come out identical.
+**Rendering.** The exact bytes a finished prompt renders to, under both profiles, including that
+context is listed in the order the speaker raised it rather than sorted by an id the host chose.
+
+**Biasing vocabulary.** The order of the transcription keyword list. This is capped before it
+reaches the provider, so the comparator decides which terms survive, and different biasing produces
+different transcripts — which is upstream of the ledger, the grounding check, and the prompt body.
 
 The suite also pins its own thresholds to the shipped bundle, so a change to `agent.json` that alters
 grounding fails the suite until the cases are reconsidered.
@@ -113,6 +117,16 @@ alignment a second time without canonicalization and comparing.
 requested a continuation when the count reached zero. That works when events are emitted
 synchronously in a loop and breaks when they arrive through an async sequence, where each call
 completes before the next is read — producing one spoken reply per tool. Both implementations now
-carry a turn's calls in a single `tool.calls` event, which removes the ordering dependency entirely.
+carry a turn's calls in a single `tool.calls` event, and the in-flight flag is set when the batch
+arrives and cleared when the continuation starts, so nothing depends on delivery timing.
 
-Neither would have been found by testing one implementation.
+A later review found four more divergences of the same kind, each present in one implementation
+only: a submitted take stayed active in TypeScript so the next sentence spoken landed inside a
+prompt that had already been sent; Swift sorted the context block by reference id while TypeScript
+kept the order the speaker raised things in; Swift dropped the confidence a host reports for a term,
+which is the signal that decides whether a word is corrected silently or asked about; and the two
+biasing comparators scored acronyms differently and broke ties with different string ordering, one
+of them locale-dependent.
+
+None of these would have been found by testing one implementation, and each is now pinned by a case
+or a regression test.

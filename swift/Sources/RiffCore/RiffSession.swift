@@ -207,7 +207,9 @@ public final class RiffSession {
         connection = nil
         setState(.closed)
         emit(.closed(reason: reason))
-        continuation.finish()
+        // The stream is deliberately left open. `start()` permits a restart, and finishing here
+        // would leave a restarted session connected but emitting nothing. It ends when the session
+        // is released; `.closed` is the signal for a consumer to stop iterating.
     }
 
     /// Captured microphone audio, in the format the provider advertised.
@@ -265,6 +267,8 @@ public final class RiffSession {
             emit(.failed(ProviderFault(code: "transcription_failed", message: reason, retryable: true)))
 
         case .responseStarted:
+            // The continuation for a tool batch has begun, so the batch is no longer pending.
+            toolsInFlight = false
             agentTranscript = ""
             setState(.thinking)
 
@@ -281,12 +285,16 @@ public final class RiffSession {
             emit(.agentTranscript(text, final: true))
 
         case .toolCalls(let calls):
+            // Set on receipt rather than inside the dispatch: the pump awaits `runTools`, so a flag
+            // scoped to that call is already cleared by the time `.responseDone` is read.
+            toolsInFlight = true
             await runTools(calls)
 
         case .responseDone, .responseCancelled:
             if !toolsInFlight { setState(.listening) }
 
         case .failed(let fault):
+            toolsInFlight = false
             emit(.failed(fault))
             if !fault.retryable { setState(.failed) }
 
@@ -305,9 +313,10 @@ public final class RiffSession {
     /// to continue once per call instead would produce one spoken reply per tool, which sounds like
     /// the agent stuttering.
     private func runTools(_ calls: [ToolCallRequest]) async {
-        guard let registry, let connection, !calls.isEmpty else { return }
-        toolsInFlight = true
-        defer { toolsInFlight = false }
+        guard let registry, let connection, !calls.isEmpty else {
+            toolsInFlight = false
+            return
+        }
 
         for call in calls {
             let at = ISO8601.now()

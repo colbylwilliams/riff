@@ -428,7 +428,12 @@ const HANDLERS: Record<string, Handler> = {
       const stored: PromptArtifact = { ...artifact, status: take.status };
       await runtime.store.saveArtifact(stored);
       runtime.onSubmitted?.(stored);
-      if (!args.keep_open) runtime.onTakeChanged?.(null);
+      if (!args.keep_open) {
+        // Without this the submitted take stays active and the next line spoken lands inside a
+        // prompt that has already been sent.
+        runtime.book.clearActive();
+        runtime.onTakeChanged?.(null);
+      }
     } else {
       take.status = "drafting";
     }

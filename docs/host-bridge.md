@@ -45,6 +45,12 @@ it resolves with one request and no ambiguity.
 Guard it: treat a bare number as an identifier only when the sentence or the `kind` hint says it is
 one, or "it breaks past 1000 rows" becomes issue 1000.
 
+**Resolve links before running any number heuristics.** A tracker or doc URL is full of digits and
+often carries a `#fragment`, so shorthand and spoken-number matching will happily read
+`https://linear.app/team/issue/ENG-4821` as issue 4821 of *your* repository and hand it to the model
+with full confidence. Recognize a link first, resolve it if it is yours, record it untouched if it
+is not.
+
 **Do not use the pointing words as search terms.** "The PR I just opened" is a recency claim, not a
 query. Searching for "opened" returns nothing useful. Strip the referring vocabulary and search only
 what is left, if anything is.
@@ -58,8 +64,10 @@ Answer from a curated glossary where you have one — a workspace's own service 
 reliable than any search. The GitHub host falls back to repository and user search, which is enough
 to recognize a repo or a colleague.
 
-Confidence matters here. High confidence means the agent applies the correction silently; low
-confidence on a load-bearing word means it asks.
+Confidence matters here, and it has to survive back to the model. High confidence means the agent
+applies the correction silently; low confidence on a load-bearing word means it asks. A host that
+returns a fuzzy search guess without saying so will have that guess substituted into someone's
+prompt as though it were confirmed.
 
 ## `recallPrompts`
 

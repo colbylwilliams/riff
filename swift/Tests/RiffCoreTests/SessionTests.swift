@@ -23,6 +23,7 @@ final class FakeConnection: RealtimeConnection, @unchecked Sendable {
     private let continuation: AsyncStream<ProviderEvent>.Continuation
     private let lock = NSLock()
     private var recorded: [Call] = []
+    private var finished = false
 
     init() {
         var continuation: AsyncStream<ProviderEvent>.Continuation!
@@ -100,14 +101,34 @@ final class FakeConnection: RealtimeConnection, @unchecked Sendable {
     func requestResponse() { record(.requestResponse) }
     func cancelResponse() { record(.cancel) }
     func updateVocabulary(_ vocabulary: [String]) { record(.vocabulary(vocabulary)) }
-    func close(reason: String?) async { record(.close); continuation.finish() }
+    func close(reason: String?) async {
+        record(.close)
+        // NSLock cannot be taken from an async context, so the critical section stays synchronous.
+        markFinished()
+        continuation.finish()
+    }
+
+    private func markFinished() {
+        lock.lock(); finished = true; lock.unlock()
+    }
+
+    var isFinished: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return finished
+    }
 }
 
 final class FakeProvider: RealtimeProvider, @unchecked Sendable {
     let id = "fake"
-    let connection = FakeConnection()
     private let lock = NSLock()
     private var recorded: ConnectRequest?
+    // A fresh connection per connect, as a real provider gives: a closed one's event stream is done.
+    private var current = FakeConnection()
+
+    var connection: FakeConnection {
+        lock.lock(); defer { lock.unlock() }
+        return current
+    }
 
     var capabilities: ProviderCapabilities {
         ProviderCapabilities(
@@ -130,11 +151,14 @@ final class FakeProvider: RealtimeProvider, @unchecked Sendable {
     func connect(_ request: ConnectRequest) async throws -> any RealtimeConnection {
         // NSLock cannot be taken from an async context, so the critical section stays synchronous.
         store(request)
-        return connection
     }
 
-    private func store(_ request: ConnectRequest) {
-        lock.lock(); recorded = request; lock.unlock()
+
+    private func store(_ request: ConnectRequest) -> FakeConnection {
+        lock.lock(); defer { lock.unlock() }
+        recorded = request
+        if current.isFinished { current = FakeConnection() }
+        return current
     }
 }
 
@@ -154,7 +178,7 @@ final class RecordingHost: RiffHost, @unchecked Sendable {
     }
 
     func resolveReference(_ request: ResolveReferenceRequest) async throws -> [ContextItem] { candidates }
-    func lookupTerm(_ request: LookupTermRequest) async throws -> [LexiconTerm] { [] }
+    func lookupTerm(_ request: LookupTermRequest) async throws -> [TermMatch] { [] }
     func recallPrompts(_ request: RecallPromptsRequest) async throws -> [PriorPrompt] { [] }
 
     func submitPrompt(_ artifact: PromptArtifact, options: SubmitOptions) async throws -> SubmitResult {
@@ -165,6 +189,31 @@ final class RecordingHost: RiffHost, @unchecked Sendable {
 
     private func store(_ artifact: PromptArtifact) {
         lock.lock(); received.append(artifact); lock.unlock()
+    }
+}
+
+/// Collects session events from a consumer task so a test can wait for one.
+final class EventBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var texts: [String] = []
+
+    func record(_ text: String) {
+        lock.lock(); texts.append(text); lock.unlock()
+    }
+
+    private func contains(_ needle: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return texts.contains { $0.contains(needle) }
+    }
+
+    func wait(for needle: String, timeout: Duration = .seconds(5)) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        repeat {
+            if contains(needle) { return true }
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(2))
+        } while ContinuousClock.now < deadline
+        return false
     }
 }
 
@@ -351,6 +400,74 @@ struct SessionTests {
         #expect(artifact.provenance.providerId == "fake")
         #expect(artifact.provenance.toolCalls?.contains { $0.name == "draft_update" } == true)
         #expect(try await store.listArtifacts(limit: 10).count == 1)
+    }
+
+    @Test("starts a fresh take after submitting, so nothing lands in a prompt already sent")
+    func freshTakeAfterSubmit() async throws {
+        let (session, provider, _, _) = try await makeSession()
+        defer { withExtendedLifetime(session) {} }
+
+        provider.connection.say("the export button does nothing past a thousand rows")
+        await settle()
+        let drafted = provider.connection.callTool("draft_update", .object([
+            "operations": .array([
+                .object([
+                    "op": .string("upsert_line"),
+                    "section": .string("intent"),
+                    "text": .string("the export button does nothing past a thousand rows"),
+                ]),
+            ]),
+        ]))
+        _ = try await provider.connection.result(for: drafted)
+        let submittedTakeId = try #require(session.book.activeId)
+
+        let submitted = provider.connection.callTool("submit_prompt", .object([:]))
+        _ = try await provider.connection.result(for: submitted)
+
+        provider.connection.say("also the avatars flicker on every scroll")
+        await settle()
+        let again = provider.connection.callTool("draft_update", .object([
+            "operations": .array([
+                .object([
+                    "op": .string("upsert_line"),
+                    "section": .string("intent"),
+                    "text": .string("the avatars flicker on every scroll"),
+                ]),
+            ]),
+        ]))
+
+        let draft = try await provider.connection.result(for: again)["draft"]
+        #expect(draft?["take_id"]?.stringValue != submittedTakeId, "a submitted take must not keep receiving lines")
+        #expect(draft?["sections"]?["intent"]?.arrayValue?.count == 1)
+        #expect(session.book.take(submittedTakeId)?.status == .submitted)
+    }
+
+    @Test("keeps the event stream alive across a restart")
+    func restartKeepsEmitting() async throws {
+        let (session, provider, _, _) = try await makeSession()
+        defer { withExtendedLifetime(session) {} }
+
+        await session.stop()
+        #expect(session.state == .closed)
+
+        // start() permits a restart, so finishing the stream on stop would leave a restarted
+        // session connected but silently emitting nothing.
+        try await session.start()
+        await settle()
+
+        let observed = EventBox()
+        let collector = Task { @MainActor in
+            for await event in session.events {
+                if case .utterance(let utterance) = event { observed.record(utterance.text) }
+            }
+        }
+        defer { collector.cancel() }
+
+        provider.connection.say("the uploader keeps dying on big files")
+        let sawIt = await observed.wait(for: "uploader")
+
+        #expect(sawIt, "a restarted session must still emit events")
+        #expect(session.ledger.all().contains { $0.text.contains("uploader") })
     }
 
     @Test("refuses to submit a take with nothing in it")

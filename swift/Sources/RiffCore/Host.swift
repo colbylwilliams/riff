@@ -16,6 +16,20 @@ public struct LookupTermRequest: Sendable {
     public var kind: String?
 }
 
+/// A term a host recognized, with how sure it is.
+///
+/// Confidence is load bearing: a confirmed glossary hit is applied silently, while a fuzzy search
+/// guess on a word the request depends on is worth asking about.
+public struct TermMatch: Sendable {
+    public var term: LexiconTerm
+    public var confidence: Double?
+
+    public init(term: LexiconTerm, confidence: Double? = nil) {
+        self.term = term
+        self.confidence = confidence
+    }
+}
+
 public struct RecallPromptsRequest: Sendable {
     public var query: String
     public var recency: String?
@@ -120,7 +134,7 @@ public protocol RiffHost: Sendable {
     /// Turns "the PR I just opened" into a thing with an identifier and a URL.
     func resolveReference(_ request: ResolveReferenceRequest) async throws -> [ContextItem]
     /// Says what a term means here and how it is spelled.
-    func lookupTerm(_ request: LookupTermRequest) async throws -> [LexiconTerm]
+    func lookupTerm(_ request: LookupTermRequest) async throws -> [TermMatch]
     /// Finds prompts the speaker wrote before.
     func recallPrompts(_ request: RecallPromptsRequest) async throws -> [PriorPrompt]
     /// Hands the finished prompt to whatever does the work.
@@ -140,7 +154,7 @@ public extension RiffHost {
 public struct NullHost: RiffHost {
     public init() {}
     public func resolveReference(_ request: ResolveReferenceRequest) async throws -> [ContextItem] { [] }
-    public func lookupTerm(_ request: LookupTermRequest) async throws -> [LexiconTerm] { [] }
+    public func lookupTerm(_ request: LookupTermRequest) async throws -> [TermMatch] { [] }
     public func recallPrompts(_ request: RecallPromptsRequest) async throws -> [PriorPrompt] { [] }
     public func submitPrompt(_ artifact: PromptArtifact, options: SubmitOptions) async throws -> SubmitResult {
         SubmitResult(submitted: true, promptId: artifact.id, destination: "none")

@@ -101,21 +101,17 @@ public final class Lexicon: @unchecked Sendable {
     }
 
     /// Canonical spellings for transcription biasing, most mangle-prone first.
+    ///
+    /// Ordering is part of the contract rather than a detail: this list is capped before it reaches
+    /// the provider, so the comparator decides which terms survive, and different biasing produces
+    /// different transcripts. Both scoring and tie-breaking are defined without locale rules so
+    /// every binding produces the same list.
     public func keywords(limit: Int = 100) -> [String] {
-        func score(_ term: LexiconTerm) -> Int {
-            var value = (term.heardAs?.count ?? 0) * 2
-            if term.canonical.contains(where: { $0.isUppercase }),
-               term.canonical.filter({ $0.isUppercase }).count >= 2 { value += 3 }
-            if term.canonical.contains(where: { $0 == " " || $0 == "-" || $0 == "_" || $0 == "/" }) { value += 2 }
-            if term.scope == "workspace" { value += 4 }
-            if term.scope == "user" { value += 2 }
-            return value
-        }
-
-        return terms()
+        terms()
             .sorted { lhs, rhs in
-                let left = score(lhs), right = score(rhs)
-                return left == right ? lhs.canonical < rhs.canonical : left > right
+                let left = biasingScore(lhs), right = biasingScore(rhs)
+                if left != right { return left > right }
+                return compareByCodePoint(lhs.canonical, rhs.canonical) < 0
             }
             .prefix(limit)
             .map(\.canonical)
@@ -150,4 +146,37 @@ public final class Lexicon: @unchecked Sendable {
         }
         return order.compactMap { used[$0] }
     }
+}
+
+/// How strongly a term should be biased toward during transcription. Terms with recorded
+/// mishearings, acronym shapes, and multi-word names are the ones recognizers actually get wrong;
+/// workspace vocabulary outranks general vocabulary because it is what this speaker will say.
+public func biasingScore(_ term: LexiconTerm) -> Int {
+    var value = (term.heardAs?.count ?? 0) * 2
+    // Two consecutive capitals, so acronyms score but ordinary CamelCase product names do not.
+    let characters = Array(term.canonical)
+    if characters.indices.dropLast().contains(where: { characters[$0].isUppercase && characters[$0 + 1].isUppercase }) {
+        value += 3
+    }
+    if term.canonical.contains(where: { $0 == " " || $0 == "-" || $0 == "_" || $0 == "/" }) { value += 2 }
+    if term.scope == "workspace" { value += 4 }
+    if term.scope == "user" { value += 2 }
+    return value
+}
+
+/// Case-insensitive comparison by code point, falling back to the raw form.
+///
+/// Deliberately not the default string ordering: this has to match the reference implementation
+/// exactly, because it decides which terms survive the biasing cap.
+public func compareByCodePoint(_ a: String, _ b: String) -> Int {
+    func compare(_ left: String, _ right: String) -> Int {
+        let leftPoints = Array(left.unicodeScalars)
+        let rightPoints = Array(right.unicodeScalars)
+        for index in 0..<min(leftPoints.count, rightPoints.count) where leftPoints[index] != rightPoints[index] {
+            return leftPoints[index].value < rightPoints[index].value ? -1 : 1
+        }
+        return leftPoints.count - rightPoints.count
+    }
+    let folded = compare(a.lowercased(), b.lowercased())
+    return folded != 0 ? folded : compare(a, b)
 }

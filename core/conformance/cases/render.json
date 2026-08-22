@@ -52,6 +52,37 @@
       "expect": "# Cache avatars\n\ncache the avatar images. the feed flickers every time you scroll."
     },
     {
+      "id": "context-keeps-the-order-they-brought-things-up",
+      "description": "Context is listed as the speaker raised it, not sorted by an id the host chose.",
+      "profile": "prose",
+      "take": {
+        "title": "Chase the upload bug",
+        "lines": [{ "section": "intent", "text": "the uploader keeps dying" }],
+        "context": [
+          {
+            "referenceId": "url-https://example.com/spec",
+            "kind": "url",
+            "title": "https://example.com/spec",
+            "url": "https://example.com/spec"
+          },
+          {
+            "referenceId": "commit-acme/web-9f2a1c3",
+            "kind": "commit",
+            "identifier": "acme/web@9f2a1c3",
+            "title": "Bump the chunk size"
+          },
+          {
+            "referenceId": "acme/web-412",
+            "kind": "pull_request",
+            "identifier": "acme/web#412",
+            "title": "Chunked uploads",
+            "state": "open"
+          }
+        ]
+      },
+      "expect": "# Chase the upload bug\n\nthe uploader keeps dying.\n\n**Context**\n- https://example.com/spec — https://example.com/spec\n- acme/web@9f2a1c3 \"Bump the chunk size\"\n- acme/web#412 \"Chunked uploads\" (open)"
+    },
+    {
       "id": "structured",
       "description": "The structured profile, for destinations that expect headings.",
       "profile": "structured",

@@ -128,14 +128,22 @@ of mind can be walked back and the shape of the conversation stays auditable.
 ## Concurrency
 
 **TypeScript.** Single-threaded and event-driven. Tool batches run with `Promise.all`; a
-`toolsInFlight` flag keeps the state machine from returning to `listening` mid-dispatch.
+`toolsInFlight` flag keeps the state machine from returning to `listening` mid-dispatch. The flag is
+set when the batch arrives and cleared when the continuation response starts, so it does not depend
+on whether provider events are delivered while the dispatch is still running — which is exactly
+where the two implementations diverge if it is scoped to the dispatch instead.
 
-**Swift.** `RiffSession` is `@MainActor`, which is where a UI-facing conversation object belongs and
+**Swift.** The same flag lifecycle applies, and it matters more here: the event pump awaits each
+handler to completion, so a flag scoped to the dispatch would already be cleared by the time the
+turn's `response.done` was read. `RiffSession` is `@MainActor`, which is where a UI-facing conversation object belongs and
 which removes a whole class of races by construction. The provider event pump is a single task
 draining an `AsyncStream`, so events are handled in order. `Lexicon` and `UtteranceLedger` are
 lock-guarded because audio and transcription touch them from other threads. The pump holds a weak
 reference to the session and closes the connection if the session is released, so a dropped session
-tears down rather than lingering half-alive with an open microphone.
+tears down rather than lingering half-alive with an open microphone. `stop()` deliberately does not
+finish the session's event stream, because `start()` permits a restart and a finished stream would
+leave a reconnected session emitting nothing; `.closed` is the signal for a consumer to stop
+iterating, and the stream ends when the session is released.
 
 ## Error handling
 

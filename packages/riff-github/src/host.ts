@@ -38,6 +38,7 @@ export interface GitHubHostOptions extends GitHubClientOptions {
 }
 
 const GITHUB_URL = /https?:\/\/(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+)\/(pull|issues|commit)\/([\w.-]+)/i;
+const BARE_URL = /https?:\/\/\S+/;
 const SHORTHAND = /(?:([\w.-]+)\/([\w.-]+))?#(\d+)/;
 /** Nobody says "hash" out loud, so a spoken reference is a bare number next to a noun. */
 const SPOKEN_NUMBER = /\b(?:pr|pull request|issue|ticket|bug)\s+(\d{1,6})\b|\b(\d{1,6})\b/i;
@@ -209,6 +210,23 @@ export class GitHubHost implements RiffHost {
       return [await this.#issue(repository, Number(id))];
     }
 
+    // Any other link is recorded and never mined for identifiers. A tracker URL is full of digits
+    // and often a `#fragment`, so running the heuristics below over it turns someone else's link
+    // into a confident lookup of an unrelated issue in this repository.
+    const bareUrl = BARE_URL.exec(phrase);
+    if (bareUrl) {
+      // Deliberately not fetched: Riff does not pull arbitrary pages, it records the link.
+      return [
+        {
+          referenceId: `url-${bareUrl[0]}`,
+          kind: "url",
+          title: bareUrl[0],
+          url: bareUrl[0],
+          confidence: 1,
+        },
+      ];
+    }
+
     const shorthand = SHORTHAND.exec(phrase);
     if (shorthand) {
       const repository =
@@ -226,20 +244,6 @@ export class GitHubHost implements RiffHost {
       if (Number.isFinite(number) && number > 0) {
         return [await this.#issue(this.#options.repository, number)];
       }
-    }
-
-    const bareUrl = /https?:\/\/\S+/.exec(phrase);
-    if (bareUrl) {
-      // Deliberately not fetched: Riff does not pull arbitrary pages, it records the link.
-      return [
-        {
-          referenceId: `url-${bareUrl[0]}`,
-          kind: "url",
-          title: bareUrl[0],
-          url: bareUrl[0],
-          confidence: 1,
-        },
-      ];
     }
 
     return [];

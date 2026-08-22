@@ -417,6 +417,11 @@ export class DraftBook {
     return take;
   }
 
+  /** Leaves no take active, so the next line spoken starts a fresh one. */
+  clearActive(): void {
+    this.#activeId = null;
+  }
+
   discard(id: string): boolean {
     const take = this.#takes.get(id);
     if (!take) return false;

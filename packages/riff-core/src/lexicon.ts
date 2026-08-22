@@ -106,21 +106,17 @@ export class Lexicon {
   }
 
   /**
-   * Canonical spellings for transcription biasing. Multi-word and acronym-shaped terms come first
-   * because those are the ones recognizers mangle; providers cap the list.
+   * Canonical spellings for transcription biasing, most mangle-prone first.
+   *
+   * Ordering is part of the contract rather than a detail: this list is capped before it reaches the
+   * provider, so the comparator decides which terms survive, and different biasing produces
+   * different transcripts. Both scoring and tie-breaking are defined without locale rules so every
+   * binding produces the same list.
    */
   keywords(limit = 100): string[] {
-    const score = (term: LexiconTerm): number => {
-      let value = (term.heardAs?.length ?? 0) * 2;
-      if (/[A-Z]{2,}/.test(term.canonical)) value += 3;
-      if (/\s|[-_/]/.test(term.canonical)) value += 2;
-      if (term.scope === "workspace") value += 4;
-      if (term.scope === "user") value += 2;
-      return value;
-    };
     return this.terms()
       .slice()
-      .sort((a, b) => score(b) - score(a) || a.canonical.localeCompare(b.canonical))
+      .sort((a, b) => biasingScore(b) - biasingScore(a) || compareByCodePoint(a.canonical, b.canonical))
       .slice(0, limit)
       .map((t) => t.canonical);
   }
@@ -160,4 +156,39 @@ export function termKey(value: string): string {
   return tokenize(value)
     .map((t) => normalizeToken(t.raw))
     .join(" ");
+}
+
+/**
+ * How strongly a term should be biased toward during transcription. Terms with recorded
+ * mishearings, acronym shapes, and multi-word names are the ones recognizers actually get wrong;
+ * workspace vocabulary outranks general vocabulary because it is what this speaker will say.
+ */
+export function biasingScore(term: LexiconTerm): number {
+  let value = (term.heardAs?.length ?? 0) * 2;
+  // Two consecutive capitals, so acronyms score but ordinary CamelCase product names do not.
+  if (/\p{Lu}\p{Lu}/u.test(term.canonical)) value += 3;
+  if (/[\s\-_/]/.test(term.canonical)) value += 2;
+  if (term.scope === "workspace") value += 4;
+  if (term.scope === "user") value += 2;
+  return value;
+}
+
+/**
+ * Case-insensitive comparison by code point, falling back to the raw form.
+ *
+ * Deliberately not `localeCompare`: its result depends on the host locale, which would make the
+ * biasing vocabulary differ between two devices running the same agent.
+ */
+export function compareByCodePoint(a: string, b: string): number {
+  const compare = (left: string, right: string): number => {
+    const leftPoints = [...left];
+    const rightPoints = [...right];
+    for (let i = 0; i < Math.min(leftPoints.length, rightPoints.length); i++) {
+      const l = leftPoints[i]!.codePointAt(0)!;
+      const r = rightPoints[i]!.codePointAt(0)!;
+      if (l !== r) return l < r ? -1 : 1;
+    }
+    return leftPoints.length - rightPoints.length;
+  };
+  return compare(a.toLowerCase(), b.toLowerCase()) || compare(a, b);
 }

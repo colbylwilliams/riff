@@ -99,6 +99,43 @@ struct ConformanceTests {
         }
     }
 
+    // MARK: - Biasing vocabulary
+
+    struct LexiconCase: CustomStringConvertible {
+        var id: String
+        var detail: String
+        var terms: [LexiconTerm]
+        var limit: Int
+        var expected: [String]
+
+        var description: String { "\(id): \(detail)" }
+    }
+
+    static let lexiconCases: [LexiconCase] = {
+        let suite = try! load("lexicon.json")
+        return (suite["cases"]?.arrayValue ?? []).map { entry in
+            LexiconCase(
+                id: entry["id"]?.stringValue ?? "",
+                detail: entry["description"]?.stringValue ?? "",
+                terms: (entry["terms"]?.arrayValue ?? []).map { term in
+                    LexiconTerm(
+                        canonical: term["canonical"]?.stringValue ?? "",
+                        kind: term["kind"]?.stringValue ?? "other",
+                        heardAs: term["heardAs"]?.arrayValue?.compactMap(\.stringValue),
+                        scope: term["scope"]?.stringValue
+                    )
+                },
+                limit: entry["limit"]?.intValue ?? 100,
+                expected: (entry["expect"]?.arrayValue ?? []).compactMap(\.stringValue)
+            )
+        }
+    }()
+
+    @Test("biasing vocabulary", arguments: lexiconCases)
+    func biasingVocabulary(_ testCase: LexiconCase) {
+        #expect(Lexicon(testCase.terms).keywords(limit: testCase.limit) == testCase.expected)
+    }
+
     // MARK: - Rendering
 
     struct RenderCase: CustomStringConvertible {

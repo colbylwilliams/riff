@@ -277,15 +277,19 @@ public final class ToolRegistry {
         let heard = args["heard"]?.stringValue ?? ""
         let kind = args["kind"]?.stringValue
 
-        var matches = runtime.lexicon.lookup(heard).map { term in
+        func described(_ term: LexiconTerm, confidence: Double?, source: String) -> JSONValue {
             json([
                 ("canonical", .string(term.canonical)),
                 ("kind", .string(term.kind)),
                 ("definition", jsonString(term.definition)),
-                ("confidence", .number(1)),
-                ("source", .string("lexicon")),
+                ("heard_as", term.heardAs.map { .array($0.map { .string($0) }) }),
+                ("scope", jsonString(term.scope)),
+                ("confidence", jsonNumber(confidence)),
+                ("source", .string(source)),
             ])
         }
+
+        var matches = runtime.lexicon.lookup(heard).map { described($0, confidence: 1, source: "lexicon") }
         let seen = Set(runtime.lexicon.lookup(heard).map { $0.canonical.lowercased() })
 
         let remote = try await runtime.host.lookupTerm(LookupTermRequest(
@@ -294,13 +298,10 @@ public final class ToolRegistry {
             kind: kind == "unknown" ? nil : kind
         ))
 
-        for term in remote where !seen.contains(term.canonical.lowercased()) {
-            matches.append(json([
-                ("canonical", .string(term.canonical)),
-                ("kind", .string(term.kind)),
-                ("definition", jsonString(term.definition)),
-                ("source", .string("host")),
-            ]))
+        // The host's confidence has to survive: a fuzzy search guess and a confirmed glossary hit
+        // are the difference between correcting a word silently and asking about it.
+        for match in remote where !seen.contains(match.term.canonical.lowercased()) {
+            matches.append(described(match.term, confidence: match.confidence, source: "host"))
         }
 
         return json([

@@ -180,6 +180,43 @@ describe("spoken references", () => {
     assert.equal(new URL(calls[0]!.url).pathname, "/search/issues");
   });
 
+  it("does not mine another tracker's URL for an issue number", async () => {
+    const { fetch, calls } = fakeGitHub({});
+    const host = new GitHubHost({ token: "t", repository: "acme/web", fetch });
+
+    const { candidates } = await host.resolveReference({
+      phrase: "the issue at https://linear.app/team/issue/ENG-4821",
+      kind: "issue",
+    });
+
+    assert.equal(candidates[0]?.kind, "url");
+    assert.equal(candidates[0]?.url, "https://linear.app/team/issue/ENG-4821");
+    assert.equal(calls.length, 0, "a link to someone else's tracker must not be looked up here");
+  });
+
+  it("does not read a URL fragment as issue shorthand", async () => {
+    const { fetch, calls } = fakeGitHub({});
+    const host = new GitHubHost({ token: "t", repository: "acme/web", fetch });
+
+    const { candidates } = await host.resolveReference({
+      phrase: "see the spec at https://example.com/docs/v2#42",
+    });
+
+    assert.equal(candidates[0]?.kind, "url");
+    assert.equal(calls.length, 0);
+  });
+
+  it("still resolves a GitHub URL rather than just recording it", async () => {
+    const { fetch } = fakeGitHub({ "/repos/acme/web/issues/412": pullRequest });
+    const host = new GitHubHost({ token: "t", repository: "acme/web", fetch });
+
+    const { candidates } = await host.resolveReference({
+      phrase: "look at https://github.com/acme/web/pull/412",
+    });
+
+    assert.equal(candidates[0]?.identifier, "acme/web#412");
+  });
+
   it("treats a bare number as an issue when the sentence says so", async () => {
     const { fetch, calls } = fakeGitHub({ "/repos/acme/web/issues/412": pullRequest });
     const host = new GitHubHost({ token: "t", repository: "acme/web", fetch });

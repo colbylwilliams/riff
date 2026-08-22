@@ -115,3 +115,22 @@ describe("conformance: rendering", () => {
     });
   }
 });
+
+interface LexiconCase {
+  id: string;
+  description: string;
+  terms: LexiconTerm[];
+  limit?: number;
+  expect: string[];
+}
+
+describe("conformance: biasing vocabulary", () => {
+  const suite = readCases("lexicon.json") as { cases: LexiconCase[] };
+
+  for (const testCase of suite.cases) {
+    it(`${testCase.id}: ${testCase.description}`, () => {
+      const lexicon = new Lexicon(testCase.terms);
+      assert.deepEqual(lexicon.keywords(testCase.limit ?? 100), testCase.expect);
+    });
+  }
+});
