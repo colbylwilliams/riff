@@ -11,6 +11,10 @@
  *   { agent }  what Riff says back, spoken in live mode and silent here
  *   { tools }  a turn's worth of tool calls, dispatched together the way a provider delivers them
  */
+
+/** Stands in for whatever id `resolve_reference` hands back, so the script suits any host. */
+export const REFERENCE_PLACEHOLDER = "{{reference}}";
+
 export const DEMO_SCRIPT = [
   {
     user: "okay so the export button on the dashboard, it does nothing if you've got more than about a thousand rows. just spins.",
@@ -73,7 +77,7 @@ export const DEMO_SCRIPT = [
     ],
   },
 
-  { agent: "that's 412, chunked uploads." },
+  { agent: `that's ${REFERENCE_PLACEHOLDER}.` },
 
   {
     note: "the sentence stays theirs; the resolved PR rides along as context",
@@ -83,7 +87,7 @@ export const DEMO_SCRIPT = [
         args: {
           operations: [
             { op: "upsert_line", section: "intent", text: "it's related to the PR I just opened" },
-            { op: "attach_context", reference_id: "ref-pr-412" },
+            { op: "attach_context", reference_id: REFERENCE_PLACEHOLDER },
           ],
         },
       },
@@ -123,3 +127,44 @@ export const DEMO_SCRIPT = [
     tools: [{ name: "submit_prompt", args: {} }],
   },
 ];
+
+/**
+ * Fills in the reference placeholder with an id the host actually returned.
+ *
+ * The script is written against a conversation, not against a particular world, so it cannot know
+ * what `resolve_reference` will call the thing it found. With no reference resolved — a repository
+ * with no open pull requests, say — the operation that needed one is dropped rather than sent to be
+ * rejected, since a missing reference is a fact about the world and not a mistake by the model.
+ */
+export function substituteReferences(args, referenceId) {
+  const operations = args?.operations;
+  if (!Array.isArray(operations)) return args;
+
+  const substituted = operations
+    .filter((operation) => operation.reference_id !== REFERENCE_PLACEHOLDER || referenceId)
+    .map((operation) =>
+      operation.reference_id === REFERENCE_PLACEHOLDER
+        ? { ...operation, reference_id: referenceId }
+        : operation,
+    );
+
+  return { ...args, operations: substituted };
+}
+
+/**
+ * How Riff would say a resolved reference out loud.
+ *
+ * Nobody reads a URL to someone, and nobody says "hash". A pull request spoken aloud is its number
+ * and its subject, which is what the README's "that's 412, chunked uploads" is.
+ */
+export function spokenReference(candidate) {
+  if (!candidate) return "the one you opened most recently";
+  const number = /#(\d+)$/.exec(candidate.identifier ?? "")?.[1];
+  const title = candidate.title?.toLowerCase();
+  return [number, title].filter(Boolean).join(", ") || candidate.identifier || "that one";
+}
+
+/** Puts the spoken form into a scripted line the agent says. */
+export function substituteSpokenReference(text, spoken) {
+  return text.replaceAll(REFERENCE_PLACEHOLDER, spoken ?? spokenReference(null));
+}

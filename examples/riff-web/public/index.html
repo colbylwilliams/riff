@@ -29,6 +29,7 @@
 
       <div class="status">
         <span id="state-pill" class="pill" data-state="idle">idle</span>
+        <span id="host-pill" class="pill" title="Which world Riff looks things up in">host: demo</span>
         <span id="take-label" class="muted"></span>
       </div>
 
@@ -94,6 +95,9 @@
       <div class="modes">
         <label><input type="radio" name="mode" value="scripted" checked /> scripted</label>
         <label id="live-mode"><input type="radio" name="mode" value="live" /> live mic</label>
+        <label id="issue-mode" hidden>
+          <input id="allow-issues" type="checkbox" /> file a real issue
+        </label>
       </div>
     </footer>
 

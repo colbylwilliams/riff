@@ -1,17 +1,21 @@
 /**
  * The demo's server, which does as little as possible.
  *
- * Two jobs. It serves the page and the compiled packages, so the browser can load Riff without a
- * bundler. And it mints the ephemeral client secret for live mode, which is the one part of the
- * provider that has to stay on a server — an API key shipped to a browser is a key you published.
+ * Three jobs. It serves the page and the compiled packages, so the browser can load Riff without a
+ * bundler. It mints the ephemeral client secret for live mode. And it runs the GitHub-backed host on
+ * this side of the wire, because a host that can reach GitHub needs a token and a token in a browser
+ * is a token you published. Both credentials stay here; the page gets answers, never keys.
  *
  *   node examples/riff-web/server.mjs
- *   OPENAI_API_KEY=sk-... node examples/riff-web/server.mjs   # enables live mode
+ *   OPENAI_API_KEY=sk-... node examples/riff-web/server.mjs           # enables live mode
+ *   GITHUB_TOKEN=$(gh auth token) node examples/riff-web/server.mjs   # resolves against a real repo
  */
 import { createServer } from "node:http";
+import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const repoRoot = resolve(here, "../..");
@@ -37,16 +41,58 @@ const CONTENT_TYPES = {
 
 const { loadBundle } = await importRiff("@riff/core");
 const { mintClientSecret } = await importRiff("@riff/openai-realtime");
+const { GitHubHost, issueDestination } = await importRiff("@riff/github");
 const bundle = loadBundle(JSON.parse(await readFile(BUNDLE_PATH, "utf8")));
 
 const apiKey = process.env.OPENAI_API_KEY;
+const githubToken = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
+const repository = process.env.GITHUB_REPOSITORY ?? (githubToken ? await detectRepository() : undefined);
+const github = Boolean(githubToken && repository);
+
+/**
+ * A destination that renders and reports but does not deliver.
+ *
+ * Replaying the script ends in `submit_prompt`, so without this every playthrough would file an
+ * issue. Filing for real stays one checkbox away rather than one click away by accident.
+ */
+const dryRunDestination = {
+  id: "dry-run",
+  label: "Dry run (nothing is created)",
+  async send(artifact) {
+    return {
+      submitted: true,
+      promptId: artifact.id,
+      destination: "dry-run",
+      message: `would have filed an issue in ${repository}; nothing was created`,
+    };
+  },
+};
+
+/** Rebuilt per request so the issue toggle takes effect without restarting anything. */
+function githubHost({ allowIssues = false } = {}) {
+  // Exactly one default, or the agent is choosing between two things that both claim to be it.
+  const destinations = allowIssues
+    ? [issueDestination({ repository, default: true })]
+    : [{ ...dryRunDestination, default: true }, issueDestination({ repository })];
+
+  return new GitHubHost({ token: githubToken, repository, workspace: repository, destinations });
+}
 
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
 
   try {
     if (url.pathname === "/api/riff/config") {
-      return json(response, 200, { live: Boolean(apiKey), model: bundle.session.model.preferred });
+      return json(response, 200, {
+        live: Boolean(apiKey),
+        model: bundle.session.model.preferred,
+        github: { available: github, repository: repository ?? null },
+      });
+    }
+
+    if (url.pathname === "/api/riff/host") {
+      if (request.method !== "POST") return json(response, 405, { error: "use POST" });
+      return await callHost(request, response);
     }
 
     if (url.pathname === "/api/riff/token") {
@@ -64,8 +110,7 @@ const server = createServer(async (request, response) => {
   }
 });
 
-async function mintToken(response) {
-  if (!apiKey) {
+async function mintToken(response) {  if (!apiKey) {
     return json(response, 501, {
       error: "live mode needs OPENAI_API_KEY set on the server; scripted mode needs nothing",
     });
@@ -86,6 +131,59 @@ async function mintToken(response) {
     json(response, 200, { value: secret.value, expiresAt: secret.expiresAt });
   } catch (error) {
     json(response, 502, { error: error.message });
+  }
+}
+
+/** The RiffHost surface, and the only methods this endpoint will dispatch. */
+const HOST_METHODS = {
+  environment: (host) => host.environment(),
+  resolveReference: (host, body) => host.resolveReference(body.request ?? {}),
+  lookupTerm: (host, body) => host.lookupTerm(body.request ?? {}),
+  recallPrompts: (host, body) => host.recallPrompts(body.request ?? {}),
+  submitPrompt: (host, body) => host.submitPrompt(body.artifact, body.options ?? {}),
+};
+
+async function callHost(request, response) {
+  if (!github) {
+    return json(response, 501, {
+      error: "no GitHub host configured; set GITHUB_TOKEN (and GITHUB_REPOSITORY if it cannot be detected)",
+    });
+  }
+
+  const body = JSON.parse(await readBody(request));
+  const method = HOST_METHODS[body.method];
+  if (!method) return json(response, 400, { error: `no host method "${body.method}"` });
+
+  try {
+    json(response, 200, (await method(githubHost(body.settings ?? {}), body)) ?? {});
+  } catch (error) {
+    // Riff turns this into a tool error the agent can talk about, which beats a dead session.
+    json(response, 502, { error: error.message });
+  }
+}
+
+function readBody(request) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => {
+      body += chunk;
+      // A prompt artifact is the largest thing that arrives here, and it is text.
+      if (body.length > 1_000_000) reject(new Error("request body too large"));
+    });
+    request.on("end", () => resolve(body));
+    request.on("error", reject);
+  });
+}
+
+/** Works out which repository to resolve against, so the usual case needs no configuration. */
+async function detectRepository() {
+  try {
+    const { stdout } = await promisify(execFile)("git", ["remote", "get-url", "origin"], { cwd: repoRoot });
+    const match = /github\.com[:/]([\w.-]+\/[\w.-]+?)(?:\.git)?\s*$/.exec(stdout);
+    return match?.[1];
+  } catch {
+    return undefined;
   }
 }
 
@@ -138,5 +236,10 @@ server.listen(port, () => {
     apiKey
       ? `live mode   enabled (${bundle.session.model.preferred})`
       : "live mode   disabled — set OPENAI_API_KEY to enable it; scripted mode works without one",
+  );
+  console.log(
+    github
+      ? `host        GitHub, resolving against ${repository}`
+      : "host        demo (a canned PR and motif) — set GITHUB_TOKEN to resolve against a real repo",
   );
 });

@@ -546,6 +546,17 @@ h2 {
   cursor: not-allowed;
 }
 
+.modes label[hidden] {
+  display: none;
+}
+
+#host-pill {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .legend {
   display: flex;
   flex-wrap: wrap;

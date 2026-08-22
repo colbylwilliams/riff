@@ -21,6 +21,8 @@ export class ScriptedProvider {
   #script;
   #speed;
   #onStep;
+  #prepareArgs;
+  #prepareText;
   #listeners = new Set();
   #connection = null;
   #aborted = false;
@@ -32,11 +34,18 @@ export class ScriptedProvider {
    * @param {Array<object>} options.script     steps to replay
    * @param {number} [options.speed]           playback multiplier; 2 runs twice as fast
    * @param {(step: object, phase: "begin" | "end") => void} [options.onStep]
+   * @param {(name: string, args: object) => object} [options.prepareArgs]
+   *        Last look at a call's arguments before it goes out, so a scripted step can refer to
+   *        something an earlier tool returned rather than to an id baked into the script.
+   * @param {(text: string) => string} [options.prepareText]
+   *        The same, for a line the agent speaks, so it can name what it actually found.
    */
-  constructor({ script, speed = 1, onStep } = {}) {
+  constructor({ script, speed = 1, onStep, prepareArgs, prepareText } = {}) {
     this.#script = script ?? [];
     this.#speed = speed;
     this.#onStep = onStep ?? (() => {});
+    this.#prepareArgs = prepareArgs ?? ((_name, args) => args);
+    this.#prepareText = prepareText ?? ((text) => text);
   }
 
   get capabilities() {
@@ -120,7 +129,8 @@ export class ScriptedProvider {
   }
 
   /** A turn from the agent. The audio is silence; the state machine does not know the difference. */
-  async #respond(text) {
+  async #respond(scripted) {
+    const text = this.#prepareText(scripted);
     const responseId = `resp_${++this.#responseSequence}`;
     this.#emit({ type: "response.started", responseId });
     await this.#sleep(320);
@@ -155,7 +165,7 @@ export class ScriptedProvider {
       calls: calls.map((call, index) => ({
         callId: `call_${this.#responseSequence}_${index}`,
         name: call.name,
-        argumentsJson: JSON.stringify(call.args ?? {}),
+        argumentsJson: JSON.stringify(this.#prepareArgs(call.name, call.args ?? {})),
       })),
     });
 

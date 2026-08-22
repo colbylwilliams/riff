@@ -12,11 +12,30 @@ npm install && npm run build
 npm run demo                     # http://localhost:4173
 ```
 
-That runs **scripted mode**, which needs no API key, no network, and no microphone.
+That runs **scripted mode** against a canned world, which needs no API key, no network, and no
+microphone.
 
 ```bash
-OPENAI_API_KEY=sk-... npm run demo    # adds live mode
+OPENAI_API_KEY=sk-... npm run demo             # adds live mode
+GITHUB_TOKEN=$(gh auth token) npm run demo     # resolves against a real repository
 ```
+
+## The host
+
+With no `GITHUB_TOKEN`, references resolve against `DemoHost` — one PR, one motif, a destination
+that goes nowhere. With a token, `GitHubHost` takes over and "the PR I just opened" resolves against
+a real repository, detected from the `origin` remote or set with `GITHUB_REPOSITORY`.
+
+**The host runs on the server, not in the page.** A host is whatever the embedding application knows
+about the world, and it runs wherever the session runs — which here is the browser, so a
+GitHub-backed host in the page would mean a GitHub token in the page. That is the same mistake as
+shipping an API key to a browser. So `proxy-host.js` implements `RiffHost` as five POSTs to
+`server.mjs`, which holds the token and delegates to the real `GitHubHost`. Riff cannot tell the
+difference, which is a fair demonstration that the seam is small enough to remote without ceremony.
+
+Sending is a **dry run** unless you tick *file a real issue*. The script ends by submitting, so
+without that every replay would open an issue. With it ticked, `submit_prompt` files a real one and
+the sheet shows its URL.
 
 ## The two modes
 
@@ -30,9 +49,14 @@ changes who is talking and nothing else, which is the provider seam doing its jo
 pushed through `sendAudio`, so the browser handles echo cancellation and jitter and this example
 needs no audio code beyond `getUserMedia`. Speak, and the same panes fill in.
 
-Nothing is ever sent anywhere. `DemoHost.submitPrompt` accepts the artifact and returns success
-without delivering it, so the "sent" moment is real all the way through the render — it just has
-nowhere to go. Point it at `GitHubHost` and it would.
+Nothing is ever sent anywhere by default. `DemoHost.submitPrompt` accepts the artifact and returns
+success without delivering it, and the GitHub host's default destination is a dry run, so the "sent"
+moment is real all the way through the render — it just has nowhere to go until you say otherwise.
+
+The script refers to a PR by the words the speaker used, never by an id, so the same recording runs
+against either host: whatever `resolve_reference` returns is filled in before the call goes out, and
+Riff names what it actually found. Against `DemoHost` it says *"that's 412, chunked uploads"*;
+against your repository it says whatever it really resolved.
 
 ## What you are looking at
 
@@ -74,7 +98,7 @@ to the agent bundle, the grounding config, or a render profile has quietly broke
 ## Files
 
 ```
-server.mjs               static files, the agent bundle, and POST /api/riff/token
+server.mjs               static files, the agent bundle, POST /api/riff/token, and the GitHub host
 verify.mjs               the same script, headless, as an assertion
 public/
   index.html             layout and the import map
@@ -83,9 +107,9 @@ public/
   demo-script.js         the README conversation, as data
   scripted-provider.js   a RealtimeProvider that replays it
   demo-host.js           a small fixed world: one PR, one motif, a destination that goes nowhere
+  proxy-host.js          a RiffHost that answers from the server, so no token reaches the page
   observe-provider.js    a decorator that surfaces tool results to the UI
 ```
 
-`mintClientSecret` runs in `server.mjs` and nowhere else. It is the one part of the provider that has
-to stay server-side: an API key shipped to a browser is a key you have published. The browser only
-ever receives a short-lived client secret.
+`mintClientSecret` and the GitHub token both live in `server.mjs` and nowhere else. The browser only
+ever receives a short-lived client secret and answers to host questions.

@@ -1,7 +1,13 @@
 import { MemoryStore, RiffSession, SECTIONS, loadBundle } from "@riff/core";
 
 import { DEMO_MOTIFS, DemoHost } from "./demo-host.js";
-import { DEMO_SCRIPT } from "./demo-script.js";
+import {
+  DEMO_SCRIPT,
+  spokenReference,
+  substituteReferences,
+  substituteSpokenReference,
+} from "./demo-script.js";
+import { ProxyHost } from "./proxy-host.js";
 import { ScriptedProvider } from "./scripted-provider.js";
 import { observeProvider } from "./observe-provider.js";
 
@@ -25,6 +31,9 @@ const ui = {
   typeForm: document.getElementById("type-form"),
   typeInput: document.getElementById("type-input"),
   liveMode: document.getElementById("live-mode"),
+  issueMode: document.getElementById("issue-mode"),
+  allowIssues: document.getElementById("allow-issues"),
+  hostPill: document.getElementById("host-pill"),
   agentAudio: document.getElementById("agent-audio"),
   sent: document.getElementById("sent"),
   sentTitle: document.getElementById("sent-title"),
@@ -52,6 +61,22 @@ let lastArtifact = null;
 let lastSubmission = null;
 let agentEntry = null;
 let liveAvailable = false;
+let githubAvailable = false;
+/** The id the host gave the last thing it resolved, so the script can attach what was found. */
+let lastReferenceId = null;
+let lastReferenceSpoken = null;
+
+/**
+ * GitHub when the server has a token, the canned world otherwise.
+ *
+ * The proxy is a real `RiffHost` as far as the session is concerned; it just answers from the other
+ * end of a fetch, which is what keeps the GitHub token off this page.
+ */
+function buildHost() {
+  return githubAvailable
+    ? new ProxyHost({ settings: () => ({ allowIssues: ui.allowIssues.checked }) })
+    : new DemoHost();
+}
 
 /* ── running a session ───────────────────────────────────────────────────── */
 
@@ -109,7 +134,6 @@ async function stop() {
 }
 
 function buildScripted() {
-  const host = new DemoHost();
   const scripted = new ScriptedProvider({
     script: DEMO_SCRIPT,
     speed: 1,
@@ -117,13 +141,17 @@ function buildScripted() {
       if (step.user) ui.pending.hidden = phase !== "begin";
       if (step.note && phase === "begin") addEntry({ head: "…", note: step.note, variant: "said" });
     },
+    // The script names a PR by the words used, not by an id, so whatever the host called the thing
+    // it found is filled in here. That is what lets one script run against either world.
+    prepareArgs: (_name, args) => substituteReferences(args, lastReferenceId),
+    prepareText: (text) => substituteSpokenReference(text, lastReferenceSpoken),
   });
 
   return {
     scripted,
     session: new RiffSession({
       bundle,
-      host,
+      host: buildHost(),
       provider: observeProvider(scripted, { onToolResult: handleToolResult }),
       store: new MemoryStore({ motifs: DEMO_MOTIFS }),
     }),
@@ -170,7 +198,7 @@ async function buildLive() {
     audioContext,
     session: new RiffSession({
       bundle,
-      host: new DemoHost(),
+      host: buildHost(),
       provider: observeProvider(provider, { onToolResult: handleToolResult }),
       store: new MemoryStore({ motifs: DEMO_MOTIFS }),
     }),
@@ -242,6 +270,8 @@ function handleToolResult({ name, args, result }) {
 
   if (name === "resolve_reference") {
     const found = result?.candidates?.[0];
+    lastReferenceId = found?.reference_id ?? null;
+    lastReferenceSpoken = found ? spokenReference(found) : null;
     addEntry({
       head: "resolve_reference",
       note: found
@@ -484,6 +514,8 @@ function startMeter(stream) {
 function reset() {
   lastArtifact = null;
   lastSubmission = null;
+  lastReferenceId = null;
+  lastReferenceSpoken = null;
   agentEntry = null;
   ui.ledger.replaceChildren();
   ui.activity.replaceChildren();
@@ -560,6 +592,18 @@ if (!liveAvailable) {
   ui.liveMode.querySelector("input").disabled = true;
   ui.liveMode.setAttribute("aria-disabled", "true");
   ui.liveMode.title = "Set OPENAI_API_KEY before starting the server to enable live mode";
+}
+
+githubAvailable = Boolean(config.github?.available);
+ui.hostPill.textContent = githubAvailable ? `host: ${config.github.repository}` : "host: demo";
+ui.hostPill.title = githubAvailable
+  ? `References resolve against ${config.github.repository}, through the server so the token stays there`
+  : "A canned world: one PR, one motif. Set GITHUB_TOKEN to resolve against a real repository";
+
+// Sending is a side effect someone can see, so filing for real is opt-in every time.
+ui.issueMode.hidden = !githubAvailable;
+if (githubAvailable) {
+  ui.issueMode.title = `Off, sending is a dry run. On, it files an issue in ${config.github.repository}`;
 }
 
 renderDraft(null);
