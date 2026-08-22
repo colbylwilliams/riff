@@ -1,0 +1,20 @@
+{
+  "name": "@riff/github",
+  "version": "1.0.0",
+  "description": "GitHub-backed Riff host: resolves spoken references to pull requests, issues, commits, and people.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "sideEffects": false,
+  "dependencies": {
+    "@riff/core": "*"
+  }
+}

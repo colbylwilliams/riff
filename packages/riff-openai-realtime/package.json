@@ -1,0 +1,23 @@
+{
+  "name": "@riff/openai-realtime",
+  "version": "1.0.0",
+  "description": "OpenAI Realtime provider for Riff, over WebSocket or WebRTC.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "dependencies": {
+    "@riff/core": "*"
+  }
+}

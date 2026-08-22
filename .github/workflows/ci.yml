@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  typescript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Fails when the committed agent bundle has drifted from core/agent, so no binding can
+      # quietly ship a different agent than the one in source.
+      - run: npm run bundle:check
+      - run: npm run build
+      - run: node --test "packages/*/test/**/*.test.ts"
+
+  swift:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      # Runs the same conformance cases as the TypeScript suite.
+      - run: swift test --package-path swift

@@ -1,0 +1,20 @@
+{
+  "name": "read_draft",
+  "kind": "local",
+  "description": "Return the current draft: title, lines by section, attached context, and whether it is coherent enough to send. Use when they ask what you have. Do not call it to decide whether to speak.",
+  "parameters": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "take_id": {
+        "type": "string",
+        "description": "Take to read. Omit to use the active take."
+      },
+      "include_rendered": {
+        "type": "boolean",
+        "default": false,
+        "description": "Include the fully rendered prompt text. Only set this when they asked for the whole thing verbatim."
+      }
+    }
+  }
+}

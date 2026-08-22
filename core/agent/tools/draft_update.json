@@ -1,0 +1,78 @@
+{
+  "name": "draft_update",
+  "kind": "local",
+  "description": "Add, replace, remove, reorder, or retitle lines in the current draft prompt, and attach resolved context to it. Call this continuously as the person talks. Line text must be what they actually said; every line is grounding-checked against the utterance ledger and ungrounded lines are rejected.",
+  "parameters": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["operations"],
+    "properties": {
+      "take_id": {
+        "type": "string",
+        "description": "Take to modify. Omit to use the active take."
+      },
+      "operations": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 24,
+        "description": "Operations applied in order. Later operations see the effect of earlier ones.",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["op"],
+          "properties": {
+            "op": {
+              "type": "string",
+              "enum": [
+                "set_title",
+                "upsert_line",
+                "remove_line",
+                "move_line",
+                "attach_context",
+                "detach_context"
+              ]
+            },
+            "line_id": {
+              "type": "string",
+              "description": "Stable id for the line. Required for remove_line and move_line. On upsert_line, omit to create a new line or pass an existing id to replace that line in place."
+            },
+            "section": {
+              "type": "string",
+              "enum": ["intent", "detail", "constraint", "acceptance", "open_question"],
+              "description": "Required for upsert_line."
+            },
+            "text": {
+              "type": "string",
+              "maxLength": 2000,
+              "description": "For upsert_line, the line in their words, cleaned of filler and false starts. For set_title, a short label of at most eight words drawn from words they used."
+            },
+            "after_line_id": {
+              "type": ["string", "null"],
+              "description": "Place the line immediately after this line within its section. Null means place first. Used by upsert_line and move_line."
+            },
+            "supersedes": {
+              "type": "array",
+              "items": { "type": "string" },
+              "maxItems": 8,
+              "description": "Line ids this line replaces because the person corrected themselves. Superseded lines leave the draft but stay in history."
+            },
+            "reference_id": {
+              "type": "string",
+              "description": "Required for attach_context and detach_context. A reference id returned by resolve_reference."
+            }
+          }
+        }
+      }
+    }
+  },
+  "returns": {
+    "type": "object",
+    "description": "Per-operation outcome plus the resulting draft shape. `rejected` entries mean the text was not grounded in what the person said; rewrite using their words.",
+    "properties": {
+      "accepted": { "type": "array", "items": { "type": "object" } },
+      "rejected": { "type": "array", "items": { "type": "object" } },
+      "fidelity": { "type": "number" },
+      "draft": { "type": "object" }
+    }
+  }
+}

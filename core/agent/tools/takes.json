@@ -1,0 +1,30 @@
+{
+  "name": "takes",
+  "kind": "local",
+  "description": "A take is one draft prompt. A session can hold several. Start a new one when they change subject entirely, park the current one when they want to come back to it, and switch when they do.",
+  "parameters": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["action"],
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": ["new", "switch", "park", "list", "discard"]
+      },
+      "take_id": {
+        "type": "string",
+        "description": "Required for switch, park, and discard."
+      },
+      "label": {
+        "type": "string",
+        "maxLength": 60,
+        "description": "For new. A few of their words so they can recognize it later."
+      },
+      "carry_context": {
+        "type": "boolean",
+        "default": false,
+        "description": "For new. Bring the current take's resolved context along, when the new request is about the same thing."
+      }
+    }
+  }
+}

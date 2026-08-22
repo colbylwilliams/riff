@@ -1,0 +1,27 @@
+{
+  "name": "riff",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A voice agent that turns spoken thinking into a finished prompt, in the speaker's own words.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "bundle": "node tools/build-bundle.mjs",
+    "bundle:check": "node tools/build-bundle.mjs --check",
+    "build": "npm run bundle && tsc --build",
+    "clean": "tsc --build --clean",
+    "test": "npm run bundle:check && npm run build && node --test \"packages/*/test/**/*.test.ts\"",
+    "typecheck": "tsc --build",
+    "swift:test": "swift test --package-path swift"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "typescript": "^5.9.3"
+  },
+  "workspaces": [
+    "packages/*"
+  ]
+}

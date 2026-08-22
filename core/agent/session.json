@@ -1,0 +1,66 @@
+{
+  "$comment": "Provider-neutral session defaults. Providers map these onto their own wire format; see core/schema/agent-bundle.schema.json and docs/providers.md.",
+  "model": {
+    "preferred": "gpt-realtime-2.1",
+    "fallbacks": ["gpt-realtime", "gpt-realtime-mini"]
+  },
+  "modalities": {
+    "input": ["audio", "text"],
+    "output": ["audio"]
+  },
+  "voice": {
+    "name": "cedar",
+    "speed": 1.0
+  },
+  "audio": {
+    "input": {
+      "encoding": "pcm_s16le",
+      "sampleRate": 24000,
+      "channels": 1,
+      "noiseReduction": "near_field"
+    },
+    "output": {
+      "encoding": "pcm_s16le",
+      "sampleRate": 24000,
+      "channels": 1
+    }
+  },
+  "turnDetection": {
+    "$comment": "Riff should not interrupt someone who is mid-thought. Semantic endpointing with low eagerness waits for a real end of turn instead of a pause.",
+    "mode": "semantic",
+    "eagerness": "low",
+    "autoRespond": true,
+    "allowBargeIn": true,
+    "serverVadFallback": {
+      "threshold": 0.5,
+      "prefixPaddingMs": 300,
+      "silenceDurationMs": 900
+    }
+  },
+  "transcription": {
+    "$comment": "Verbatim user speech is the source of truth for the prompt body, so transcription quality is load bearing. Vocabulary biasing is compiled from the active lexicon at connect time.",
+    "preferred": "gpt-4o-transcribe",
+    "fallbacks": ["gpt-transcribe", "gpt-4o-mini-transcribe", "whisper-1"],
+    "language": null,
+    "biasing": {
+      "enabled": true,
+      "maxKeywords": 100,
+      "promptPreamble": "Technical conversation about software work. Expect these terms:"
+    }
+  },
+  "reasoning": {
+    "effort": "low"
+  },
+  "limits": {
+    "maxOutputTokens": 4096,
+    "maxSessionSeconds": 3600,
+    "toolTimeoutMs": 6000
+  },
+  "truncation": {
+    "strategy": "retention_ratio",
+    "retentionRatio": 0.9,
+    "postInstructionTokenLimit": 24000
+  },
+  "toolChoice": "auto",
+  "parallelToolCalls": true
+}

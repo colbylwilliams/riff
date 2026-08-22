@@ -1,0 +1,36 @@
+{
+  "name": "motifs",
+  "kind": "local",
+  "description": "Standing instructions saved in their own words and reused across prompts. List them, attach one to this draft, take one off, or save a new one when they say something that is clearly a rule rather than a detail of this request.",
+  "parameters": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["action"],
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": ["list", "attach", "detach", "save", "retire"]
+      },
+      "motif_id": {
+        "type": "string",
+        "description": "Required for attach, detach, and retire."
+      },
+      "text": {
+        "type": "string",
+        "maxLength": 500,
+        "description": "Required for save. Verbatim as they said it, filler removed. Grounding-checked like a draft line."
+      },
+      "scope": {
+        "type": "string",
+        "enum": ["user", "workspace"],
+        "default": "user",
+        "description": "For save. Whether it applies everywhere or only in this workspace."
+      },
+      "applies_when": {
+        "type": "string",
+        "maxLength": 200,
+        "description": "For save. When this rule is relevant, so it is not attached to everything. Your words here, since it is metadata rather than prompt content."
+      }
+    }
+  }
+}

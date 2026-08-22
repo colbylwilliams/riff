@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://riff.dev/schema/agent-manifest.schema.json",
+  "title": "Riff agent manifest",
+  "description": "Source manifest that assembles the shared agent definition. Compiled into an agent bundle by tools/build-bundle.mjs.",
+  "type": "object",
+  "required": ["id", "name", "version", "instructions", "tools", "session", "grounding", "render", "policy"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+    "name": { "type": "string" },
+    "version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+    "description": { "type": "string" },
+    "instructions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "pattern": "^instructions/.+\\.md$" },
+      "description": "Instruction section files, composed in listed order."
+    },
+    "tools": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "pattern": "^tools/.+\\.json$" }
+    },
+    "session": { "type": "string" },
+    "lexicon": { "type": "string" },
+    "grounding": { "$ref": "#/$defs/grounding" },
+    "render": { "$ref": "#/$defs/render" },
+    "policy": { "$ref": "#/$defs/policy" }
+  },
+  "$defs": {
+    "section": {
+      "type": "string",
+      "enum": ["intent", "detail", "constraint", "acceptance", "open_question"]
+    },
+    "grounding": {
+      "type": "object",
+      "required": ["threshold", "windowSize", "sections", "freeTokens", "filler"],
+      "additionalProperties": false,
+      "properties": {
+        "threshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Minimum fraction of a candidate line's tokens that must be recoverable from what the speaker said."
+        },
+        "titleThreshold": { "type": "number", "minimum": 0, "maximum": 1 },
+        "windowSize": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "How many consecutive utterances may be treated as one source span, so a sentence split across transcription boundaries still matches."
+        },
+        "sections": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "enum": ["strict", "motif-or-strict", "derived"]
+          }
+        },
+        "freeTokens": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Tokens a line may contain without a source, so joining fragments does not fail the check."
+        },
+        "filler": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Tokens and phrases removable from an utterance without it counting as a rewrite."
+        }
+      }
+    },
+    "render": {
+      "type": "object",
+      "required": ["profile", "profiles", "labels"],
+      "additionalProperties": false,
+      "properties": {
+        "profile": { "type": "string" },
+        "profiles": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "enum": ["h1", "paragraphs", "labeled-list", "section-list", "omit"]
+            }
+          }
+        },
+        "labels": { "type": "object", "additionalProperties": { "type": "string" } },
+        "includeProvenanceFooter": { "type": "boolean" }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "required": ["maxTakes", "readinessRequires", "autoSubmit", "readbackDefault"],
+      "additionalProperties": false,
+      "properties": {
+        "maxTakes": { "type": "integer", "minimum": 1 },
+        "readinessRequires": { "type": "array", "items": { "$ref": "#/$defs/section" } },
+        "autoSubmit": {
+          "type": "boolean",
+          "description": "Whether the agent may submit without being told to. Always false: the speaker decides when a prompt goes."
+        },
+        "readbackDefault": { "type": "string", "enum": ["none", "gist", "full"] },
+        "persistAudio": { "type": "boolean" },
+        "redactSecretsFromTranscript": { "type": "boolean" }
+      }
+    }
+  }
+}
