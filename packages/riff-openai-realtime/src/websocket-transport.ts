@@ -31,6 +31,10 @@ const OPEN = 1;
  * servers, tests, terminals, and any platform without a WebRTC dependency.
  */
 export async function connectWebSocket(options: WebSocketTransportOptions): Promise<RealtimeTransport> {
+  // Before the first await: minting a credential can block, and a caller that already gave up
+  // should not wait on it, let alone have a socket opened afterwards.
+  if (options.signal?.aborted) throw new Error("connection aborted");
+
   const credentials = await options.credentials.get();
   const url = endpointWithModel(options.url ?? DEFAULT_URL, options.model);
 

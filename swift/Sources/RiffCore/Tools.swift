@@ -422,7 +422,9 @@ public final class ToolRegistry {
             }
 
             let motif = Motif(
-                id: "m\(runtime.motifs.count + 1)",
+                // Counting active motifs reuses an id after one is retired: retire m1, reload, and
+                // the next save is called m2 and silently replaces the existing m2.
+                id: newMotifId(runtime.motifs),
                 text: text,
                 scope: args["scope"]?.stringValue ?? "user",
                 appliesWhen: args["applies_when"]?.stringValue,
@@ -435,6 +437,9 @@ public final class ToolRegistry {
         case "attach":
             guard let id = args["motif_id"]?.stringValue, let motif = runtime.motifs[id] else {
                 throw RiffError.tool("no motif \"\(args["motif_id"]?.stringValue ?? "(missing motif_id)")\"")
+            }
+            guard motif.retiredAt == nil else {
+                throw RiffError.tool("motif \"\(motif.id)\" was retired; they asked to stop using it")
             }
             let take = try openTake(from: .object([:]))
             if take.lines().contains(where: { $0.motifId == motif.id }) {
@@ -617,3 +622,13 @@ public final class ToolRegistry {
     }
 }
 
+
+
+/// A motif id that no existing or retired motif is using.
+func newMotifId(_ motifs: [String: Motif]) -> String {
+    var highest = 0
+    for id in motifs.keys where id.hasPrefix("m") {
+        if let value = Int(id.dropFirst()) { highest = max(highest, value) }
+    }
+    return "m\(highest + 1)"
+}

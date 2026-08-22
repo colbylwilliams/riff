@@ -138,6 +138,16 @@ export function createToolRegistry(runtime: ToolRuntime): ToolRegistry {
   };
 }
 
+/** A motif id that no existing or retired motif is using. */
+function newMotifId(motifs: Map<string, Motif>): string {
+  let highest = 0;
+  for (const id of motifs.keys()) {
+    const parsed = /^m(\d+)$/.exec(id);
+    if (parsed) highest = Math.max(highest, Number(parsed[1]));
+  }
+  return `m${highest + 1}`;
+}
+
 function resolveTake(runtime: ToolRuntime, takeId?: string): Take {
   if (!takeId) return runtime.book.active();
   const take = runtime.book.get(takeId);
@@ -373,7 +383,9 @@ const HANDLERS: Record<string, Handler> = {
         }
 
         const motif: Motif = {
-          id: `m${runtime.motifs.size + 1}`,
+          // Counting active motifs reuses an id after one is retired: retire m1, reload, and the
+          // next save is called m2 and silently replaces the existing m2.
+          id: newMotifId(runtime.motifs),
           text,
           scope: (args.scope ?? "user") as "user" | "workspace",
           ...(args.applies_when ? { appliesWhen: args.applies_when } : {}),
@@ -387,6 +399,7 @@ const HANDLERS: Record<string, Handler> = {
       case "attach": {
         const motif = args.motif_id ? runtime.motifs.get(args.motif_id) : undefined;
         if (!motif) throw new Error(`no motif "${args.motif_id ?? "(missing motif_id)"}"`);
+        if (motif.retiredAt) throw new Error(`motif "${motif.id}" was retired; they asked to stop using it`);
 
         const take = requireOpen(runtime.book.active());
         if (take.lines().some((line) => line.motifId === motif.id)) {

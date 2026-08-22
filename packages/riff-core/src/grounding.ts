@@ -23,7 +23,6 @@ export interface GroundingChecker {
 }
 
 const MAX_CANDIDATE_TOKENS = 240;
-const MAX_SPAN_TOKENS = 600;
 
 /**
  * Decides whether a line the agent wants to put in the prompt is actually made of the speaker's
@@ -89,29 +88,22 @@ export function createGroundingChecker(config: GroundingConfig, lexicon: Lexicon
       // Multiset containment upper-bounds the ordered match, so this prunes without false negatives.
       if (containment(candCounts, span.tokens, totalSubstantive) < threshold) continue;
 
-      // Aligning only a suffix of a long span would reject a line quoted from the start of a long
-      // turn: containment passes against the whole span, then LCS scores near zero against the
-      // tail. Overlapping windows keep the cost bounded without dropping any of the source.
-      for (const offset of windowOffsets(span.tokens.length, candTokens.length)) {
-        const spanTokens = span.tokens.slice(offset, offset + MAX_SPAN_TOKENS);
-        const pairs = longestCommonSubsequence(candTokens, spanTokens);
+      const pairs = longestCommonSubsequence(candTokens, span.tokens);
 
-        const matchedCandIndexes = new Set<number>();
-        const matchedOwners = new Set<string>();
-        let matchedSubstantive = 0;
-        for (const [candIndex, spanIndex] of pairs) {
-          matchedCandIndexes.add(candIndex);
-          const token = candTokens[candIndex];
-          if (token !== undefined && !ignorable(token)) matchedSubstantive += 1;
-          const owner = span.owners[spanIndex + offset];
-          if (owner !== undefined) matchedOwners.add(owner);
-        }
-
-        const ratio = matchedSubstantive / totalSubstantive;
-        if (!best || ratio > best.ratio) best = { ratio, span, matchedCandIndexes, matchedOwners };
-        if (ratio === 1) break;
+      const matchedCandIndexes = new Set<number>();
+      const matchedOwners = new Set<string>();
+      let matchedSubstantive = 0;
+      for (const [candIndex, spanIndex] of pairs) {
+        matchedCandIndexes.add(candIndex);
+        const token = candTokens[candIndex];
+        if (token !== undefined && !ignorable(token)) matchedSubstantive += 1;
+        const owner = span.owners[spanIndex];
+        if (owner !== undefined) matchedOwners.add(owner);
       }
-      if (best?.ratio === 1) break;
+
+      const ratio = matchedSubstantive / totalSubstantive;
+      if (!best || ratio > best.ratio) best = { ratio, span, matchedCandIndexes, matchedOwners };
+      if (ratio === 1) break;
     }
 
     if (!best) {
@@ -160,21 +152,6 @@ export function createGroundingChecker(config: GroundingConfig, lexicon: Lexicon
   };
 }
 
-/**
- * Start offsets of overlapping windows covering a span. Windows overlap by the candidate's length so
- * a line straddling a window boundary is still seen whole by at least one of them.
- */
-function windowOffsets(spanLength: number, candidateLength: number): number[] {
-  if (spanLength <= MAX_SPAN_TOKENS) return [0];
-  const stride = Math.max(1, MAX_SPAN_TOKENS - candidateLength);
-  const offsets: number[] = [];
-  for (let start = 0; start < spanLength; start += stride) {
-    offsets.push(start);
-    if (start + MAX_SPAN_TOKENS >= spanLength) break;
-  }
-  return offsets;
-}
-
 function countTokens(tokens: readonly string[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const token of tokens) counts.set(token, (counts.get(token) ?? 0) + 1);
@@ -192,39 +169,93 @@ function containment(candCounts: Map<string, number>, spanTokens: readonly strin
   return shared / total;
 }
 
-/** Returns matched index pairs of the longest common subsequence of two token sequences. */
-function longestCommonSubsequence(a: readonly string[], b: readonly string[]): Array<[number, number]> {
-  const rows = a.length;
-  const cols = b.length;
-  if (rows === 0 || cols === 0) return [];
-
-  const width = cols + 1;
-  const table = new Uint32Array((rows + 1) * width);
-
-  for (let i = rows - 1; i >= 0; i--) {
-    for (let j = cols - 1; j >= 0; j--) {
-      table[i * width + j] =
-        a[i] === b[j]
-          ? (table[(i + 1) * width + (j + 1)] ?? 0) + 1
-          : Math.max(table[(i + 1) * width + j] ?? 0, table[i * width + (j + 1)] ?? 0);
-    }
-  }
-
+/**
+ * Matched index pairs of the longest common subsequence, in O(min) memory.
+ *
+ * A full DP table would be quadratic, which is why earlier versions capped the source span and
+ * aligned only a window of it. Every one of those caps was wrong in a way nobody could see: a cap
+ * on the candidate let invented text through, and a cap on the source rejected lines that were
+ * entirely the speaker's. Hirschberg's divide and conquer gives the same alignment while holding
+ * only two rows at a time, so the whole span is always compared and there is no cap to be wrong
+ * about.
+ */
+export function longestCommonSubsequence(a: readonly string[], b: readonly string[]): Array<[number, number]> {
   const pairs: Array<[number, number]> = [];
-  let i = 0;
-  let j = 0;
-  while (i < rows && j < cols) {
-    if (a[i] === b[j]) {
-      pairs.push([i, j]);
-      i += 1;
-      j += 1;
-    } else if ((table[(i + 1) * width + j] ?? 0) >= (table[i * width + (j + 1)] ?? 0)) {
-      i += 1;
-    } else {
-      j += 1;
+  align(a, 0, a.length, b, 0, b.length, pairs);
+  return pairs;
+}
+
+function align(
+  a: readonly string[],
+  aStart: number,
+  aEnd: number,
+  b: readonly string[],
+  bStart: number,
+  bEnd: number,
+  out: Array<[number, number]>,
+): void {
+  if (aEnd - aStart === 0 || bEnd - bStart === 0) return;
+
+  if (aEnd - aStart === 1) {
+    for (let j = bStart; j < bEnd; j++) {
+      if (a[aStart] === b[j]) {
+        out.push([aStart, j]);
+        return;
+      }
+    }
+    return;
+  }
+
+  const aMid = aStart + ((aEnd - aStart) >> 1);
+  const forward = lcsRow(a, aStart, aMid, b, bStart, bEnd, false);
+  const backward = lcsRow(a, aMid, aEnd, b, bStart, bEnd, true);
+
+  // Split the source where the two halves together match the most. Ties take the leftmost split so
+  // both platform implementations choose the same alignment among equally long ones.
+  let bestScore = -1;
+  let bestSplit = bStart;
+  for (let j = bStart; j <= bEnd; j++) {
+    const score = (forward[j - bStart] ?? 0) + (backward[bEnd - j] ?? 0);
+    if (score > bestScore) {
+      bestScore = score;
+      bestSplit = j;
     }
   }
-  return pairs;
+
+  align(a, aStart, aMid, b, bStart, bestSplit, out);
+  align(a, aMid, aEnd, b, bestSplit, bEnd, out);
+}
+
+/** Final DP row of the LCS lengths for one half, walked forwards or backwards. */
+function lcsRow(
+  a: readonly string[],
+  aStart: number,
+  aEnd: number,
+  b: readonly string[],
+  bStart: number,
+  bEnd: number,
+  reversed: boolean,
+): Uint32Array {
+  const width = bEnd - bStart + 1;
+  let previous = new Uint32Array(width);
+  let current = new Uint32Array(width);
+
+  for (let i = aStart; i < aEnd; i++) {
+    const left = reversed ? a[aEnd - 1 - (i - aStart)] : a[i];
+    current[0] = 0;
+    for (let j = 1; j < width; j++) {
+      const right = reversed ? b[bEnd - j] : b[bStart + j - 1];
+      current[j] =
+        left === right
+          ? (previous[j - 1] ?? 0) + 1
+          : Math.max(previous[j] ?? 0, current[j - 1] ?? 0);
+    }
+    const swap = previous;
+    previous = current;
+    current = swap;
+  }
+
+  return previous;
 }
 
 function sameSequence(a: readonly string[], b: readonly string[]): boolean {

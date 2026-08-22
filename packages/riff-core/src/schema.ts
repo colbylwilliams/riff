@@ -41,10 +41,13 @@ function walk(schema: Schema, input: unknown, path: string, errors: string[]): u
   }
 
   if (typeof input === "string") {
-    if (typeof schema.minLength === "number" && input.length < schema.minLength) {
+    // JSON Schema counts code points. `String.length` counts UTF-16 units, which would reject a
+    // valid value containing emoji and disagree with the other binding.
+    const length = codePointLength(input);
+    if (typeof schema.minLength === "number" && length < schema.minLength) {
       errors.push(`${at}: must be at least ${schema.minLength} characters`);
     }
-    if (typeof schema.maxLength === "number" && input.length > schema.maxLength) {
+    if (typeof schema.maxLength === "number" && length > schema.maxLength) {
       errors.push(`${at}: must be at most ${schema.maxLength} characters`);
     }
     if (typeof schema.pattern === "string" && !new RegExp(schema.pattern).test(input)) {
@@ -106,6 +109,12 @@ function walk(schema: Schema, input: unknown, path: string, errors: string[]): u
   }
 
   return input;
+}
+
+function codePointLength(value: string): number {
+  let length = 0;
+  for (const _ of value) length += 1;
+  return length;
 }
 
 function matchesType(type: string, value: unknown): boolean {

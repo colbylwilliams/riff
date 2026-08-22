@@ -45,6 +45,10 @@ const EVENT_CHANNEL = "oai-events";
  * and packet loss that a WebSocket carrying raw PCM does not.
  */
 export async function connectWebRTC(options: WebRTCTransportOptions): Promise<RealtimeTransport> {
+  // Before the first await, so a caller that already gave up neither waits on a slow credential
+  // provider nor starts negotiating a peer connection.
+  if (options.signal?.aborted) throw new Error("connection aborted");
+
   const credentials = await options.credentials.get();
   const peer = options.peerConnection;
 

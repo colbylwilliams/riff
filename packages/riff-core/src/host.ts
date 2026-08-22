@@ -129,6 +129,10 @@ export class NullHost implements RiffHost {
 export interface RiffStore {
   loadLexicon(): Promise<LexiconTerm[]>;
   saveTerm(term: LexiconTerm): Promise<void>;
+  /**
+   * Every motif, retired ones included. Retired motifs are filtered out where they are offered, and
+   * keeping them here is what stops a new motif being given an id a retired one still holds.
+   */
   listMotifs(): Promise<Motif[]>;
   saveMotif(motif: Motif): Promise<void>;
   retireMotif(id: string, at: string): Promise<void>;
@@ -157,7 +161,7 @@ export class MemoryStore implements RiffStore {
   }
 
   async listMotifs(): Promise<Motif[]> {
-    return [...this.#motifs.values()].filter((motif) => !motif.retiredAt);
+    return [...this.#motifs.values()];
   }
 
   async saveMotif(motif: Motif): Promise<void> {

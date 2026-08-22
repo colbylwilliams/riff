@@ -39,10 +39,13 @@ public enum SchemaValidator {
         }
 
         if let text = input.stringValue {
-            if let minimum = schema["minLength"]?.intValue, text.count < minimum {
+            // JSON Schema counts code points. `String.count` counts grapheme clusters, which would
+            // give a multi-scalar emoji a different length than a conforming validator.
+            let length = text.unicodeScalars.count
+            if let minimum = schema["minLength"]?.intValue, length < minimum {
                 errors.append("\(at): must be at least \(minimum) characters")
             }
-            if let maximum = schema["maxLength"]?.intValue, text.count > maximum {
+            if let maximum = schema["maxLength"]?.intValue, length > maximum {
                 errors.append("\(at): must be at most \(maximum) characters")
             }
             if let pattern = schema["pattern"]?.stringValue,

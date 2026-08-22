@@ -210,3 +210,26 @@ struct ConformanceTests {
         #expect(rendered == testCase.expected)
     }
 }
+
+
+struct SchemaTests {
+    @Test("measures string length in code points, as JSON Schema specifies")
+    func codePointLength() {
+        // 31 emoji: 31 code points, but 62 UTF-16 units and 31 grapheme clusters. Both bindings
+        // must agree with a conforming validator, so both count scalars.
+        let value = String(repeating: "🎧", count: 31)
+        let schema = JSONValue.object(["type": .string("string"), "maxLength": .number(60)])
+
+        #expect(value.utf16.count == 62, "the naive count is over the limit")
+        #expect(SchemaValidator.validate(schema, .string(value)).valid)
+    }
+
+    @Test("still enforces the limit on ordinary text")
+    func ordinaryLimits() {
+        let tooLong = JSONValue.object(["type": .string("string"), "maxLength": .number(3)])
+        #expect(!SchemaValidator.validate(tooLong, .string("abcd")).valid)
+
+        let tooShort = JSONValue.object(["type": .string("string"), "minLength": .number(2)])
+        #expect(!SchemaValidator.validate(tooShort, .string("a")).valid)
+    }
+}

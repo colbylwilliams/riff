@@ -165,6 +165,8 @@ public struct NullHost: RiffHost {
 public protocol RiffStore: Sendable {
     func loadLexicon() async throws -> [LexiconTerm]
     func saveTerm(_ term: LexiconTerm) async throws
+    /// Every motif, retired ones included. Retired motifs are filtered out where they are offered,
+    /// and keeping them here is what stops a new motif being given an id a retired one still holds.
     func listMotifs() async throws -> [Motif]
     func saveMotif(_ motif: Motif) async throws
     func retireMotif(id: String, at: String) async throws
@@ -193,7 +195,7 @@ public actor MemoryStore: RiffStore {
     }
 
     public func listMotifs() async throws -> [Motif] {
-        motifs.values.filter { $0.retiredAt == nil }.sorted { $0.id < $1.id }
+        motifs.values.sorted { $0.id < $1.id }
     }
 
     public func saveMotif(_ motif: Motif) async throws { motifs[motif.id] = motif }

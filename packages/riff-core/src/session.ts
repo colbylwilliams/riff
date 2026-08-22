@@ -121,6 +121,7 @@ export class RiffSession {
 
     try {
       for (const term of await this.#store.loadLexicon()) this.lexicon.add(term);
+      // Includes retired motifs when the store keeps them, so their ids are never reissued.
       for (const motif of await this.#store.listMotifs()) this.#motifs.set(motif.id, motif);
 
       const environment = (await this.#host.environment?.()) ?? {};

@@ -23,7 +23,11 @@ export class GitHubClient {
     this.#userAgent = options.userAgent ?? "riff";
   }
 
-  async get<T>(path: string, query: Record<string, string | number | undefined> = {}): Promise<T> {
+  async get<T>(
+    path: string,
+    query: Record<string, string | number | undefined> = {},
+    options: { signal?: AbortSignal } = {},
+  ): Promise<T> {
     const url = new URL(`${this.#baseUrl}${path}`);
     for (const [key, value] of Object.entries(query)) {
       if (value !== undefined) url.searchParams.set(key, String(value));
@@ -36,6 +40,7 @@ export class GitHubClient {
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": this.#userAgent,
       },
+      ...(options.signal ? { signal: options.signal } : {}),
     });
 
     if (!response.ok) {
@@ -44,7 +49,7 @@ export class GitHubClient {
     return (await response.json()) as T;
   }
 
-  async post<T>(path: string, body: unknown): Promise<T> {
+  async post<T>(path: string, body: unknown, options: { signal?: AbortSignal } = {}): Promise<T> {
     const response = await this.#fetch(`${this.#baseUrl}${path}`, {
       method: "POST",
       headers: {
@@ -55,6 +60,7 @@ export class GitHubClient {
         "User-Agent": this.#userAgent,
       },
       body: JSON.stringify(body),
+      ...(options.signal ? { signal: options.signal } : {}),
     });
 
     if (!response.ok) {

@@ -37,7 +37,6 @@ public struct GroundingChecker: Sendable {
     private let filler: FillerMatcher
 
     private static let maxCandidateTokens = 240
-    static let maxSpanTokens = 600
 
     public init(config: GroundingConfig, lexicon: Lexicon) {
         self.config = config
@@ -100,31 +99,21 @@ public struct GroundingChecker: Sendable {
             // Multiset containment upper-bounds the ordered match, so this prunes without false negatives.
             guard containment(candCounts, span.tokens, totalSubstantive) >= threshold else { continue }
 
-            // Aligning only a suffix of a long span would reject a line quoted from the start of a
-            // long turn: containment passes against the whole span, then LCS scores near zero
-            // against the tail. Overlapping windows keep the cost bounded without dropping source.
-            for offset in windowOffsets(spanLength: span.tokens.count, candidateLength: candTokens.count) {
-                let upper = min(offset + Self.maxSpanTokens, span.tokens.count)
-                let spanTokens = Array(span.tokens[offset..<upper])
+            var matchedIndexes = Set<Int>()
+            var matchedOwners = Set<String>()
+            var matchedSubstantive = 0
 
-                var matchedIndexes = Set<Int>()
-                var matchedOwners = Set<String>()
-                var matchedSubstantive = 0
-
-                for pair in longestCommonSubsequence(candTokens, spanTokens) {
-                    matchedIndexes.insert(pair.0)
-                    if !ignorable(candTokens[pair.0]) { matchedSubstantive += 1 }
-                    let ownerIndex = pair.1 + offset
-                    if ownerIndex < span.owners.count { matchedOwners.insert(span.owners[ownerIndex]) }
-                }
-
-                let ratio = Double(matchedSubstantive) / Double(totalSubstantive)
-                if best == nil || ratio > best!.ratio {
-                    best = (ratio, span, matchedIndexes, matchedOwners)
-                }
-                if ratio == 1 { break }
+            for pair in longestCommonSubsequence(candTokens, span.tokens) {
+                matchedIndexes.insert(pair.0)
+                if !ignorable(candTokens[pair.0]) { matchedSubstantive += 1 }
+                if pair.1 < span.owners.count { matchedOwners.insert(span.owners[pair.1]) }
             }
-            if best?.ratio == 1 { break }
+
+            let ratio = Double(matchedSubstantive) / Double(totalSubstantive)
+            if best == nil || ratio > best!.ratio {
+                best = (ratio, span, matchedIndexes, matchedOwners)
+            }
+            if ratio == 1 { break }
         }
 
         guard let best else { return empty }
@@ -176,49 +165,83 @@ public struct GroundingChecker: Sendable {
     }
 }
 
-/// Start offsets of overlapping windows covering a span. Windows overlap by the candidate's length
-/// so a line straddling a window boundary is still seen whole by at least one of them.
-func windowOffsets(spanLength: Int, candidateLength: Int) -> [Int] {
-    guard spanLength > GroundingChecker.maxSpanTokens else { return [0] }
-    let stride = max(1, GroundingChecker.maxSpanTokens - candidateLength)
-    var offsets: [Int] = []
-    var start = 0
-    while start < spanLength {
-        offsets.append(start)
-        if start + GroundingChecker.maxSpanTokens >= spanLength { break }
-        start += stride
-    }
-    return offsets
-}
-
-/// Returns matched index pairs of the longest common subsequence of two token sequences.
-func longestCommonSubsequence(_ a: [String], _ b: [String]) -> [(Int, Int)] {
-    let rows = a.count, cols = b.count
-    guard rows > 0, cols > 0 else { return [] }
-
-    let width = cols + 1
-    var table = [Int32](repeating: 0, count: (rows + 1) * width)
-
-    for i in stride(from: rows - 1, through: 0, by: -1) {
-        for j in stride(from: cols - 1, through: 0, by: -1) {
-            table[i * width + j] = a[i] == b[j]
-                ? table[(i + 1) * width + (j + 1)] + 1
-                : max(table[(i + 1) * width + j], table[i * width + (j + 1)])
-        }
-    }
-
+/// Matched index pairs of the longest common subsequence, in O(min) memory.
+///
+/// A full DP table would be quadratic, which is why earlier versions capped the source span and
+/// aligned only a window of it. Every one of those caps was wrong in a way nobody could see: a cap
+/// on the candidate let invented text through, and a cap on the source rejected lines that were
+/// entirely the speaker's. Hirschberg's divide and conquer gives the same alignment while holding
+/// only two rows at a time, so the whole span is always compared and there is no cap to be wrong
+/// about.
+public func longestCommonSubsequence(_ a: [String], _ b: [String]) -> [(Int, Int)] {
     var pairs: [(Int, Int)] = []
-    var i = 0, j = 0
-    while i < rows, j < cols {
-        if a[i] == b[j] {
-            pairs.append((i, j))
-            i += 1
-            j += 1
-        } else if table[(i + 1) * width + j] >= table[i * width + (j + 1)] {
-            i += 1
-        } else {
-            j += 1
-        }
-    }
+    align(a, 0, a.count, b, 0, b.count, &pairs)
     return pairs
 }
+
+private func align(
+    _ a: [String],
+    _ aStart: Int,
+    _ aEnd: Int,
+    _ b: [String],
+    _ bStart: Int,
+    _ bEnd: Int,
+    _ out: inout [(Int, Int)]
+) {
+    if aEnd - aStart == 0 || bEnd - bStart == 0 { return }
+
+    if aEnd - aStart == 1 {
+        for j in bStart..<bEnd where a[aStart] == b[j] {
+            out.append((aStart, j))
+            return
+        }
+        return
+    }
+
+    let aMid = aStart + (aEnd - aStart) / 2
+    let forward = lcsRow(a, aStart, aMid, b, bStart, bEnd, reversed: false)
+    let backward = lcsRow(a, aMid, aEnd, b, bStart, bEnd, reversed: true)
+
+    // Split the source where the two halves together match the most. Ties take the leftmost split
+    // so both platform implementations choose the same alignment among equally long ones.
+    var bestScore = -1
+    var bestSplit = bStart
+    for j in bStart...bEnd {
+        let score = Int(forward[j - bStart]) + Int(backward[bEnd - j])
+        if score > bestScore {
+            bestScore = score
+            bestSplit = j
+        }
+    }
+
+    align(a, aStart, aMid, b, bStart, bestSplit, &out)
+    align(a, aMid, aEnd, b, bestSplit, bEnd, &out)
+}
+
+/// Final DP row of the LCS lengths for one half, walked forwards or backwards.
+private func lcsRow(
+    _ a: [String],
+    _ aStart: Int,
+    _ aEnd: Int,
+    _ b: [String],
+    _ bStart: Int,
+    _ bEnd: Int,
+    reversed: Bool
+) -> [UInt32] {
+    let width = bEnd - bStart + 1
+    var previous = [UInt32](repeating: 0, count: width)
+    var current = [UInt32](repeating: 0, count: width)
+
+    for i in aStart..<aEnd {
+        let left = reversed ? a[aEnd - 1 - (i - aStart)] : a[i]
+        current[0] = 0
+        for j in 1..<width {
+            let right = reversed ? b[bEnd - j] : b[bStart + j - 1]
+            current[j] = left == right ? previous[j - 1] + 1 : max(previous[j], current[j - 1])
+        }
+        swap(&previous, &current)
+    }
+
+    return previous
+}
+

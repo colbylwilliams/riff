@@ -21,7 +21,11 @@ export interface SubmitDestination {
   id: string;
   label: string;
   default?: boolean;
-  send(artifact: PromptArtifact, client: GitHubClient): Promise<SubmitResult>;
+  /**
+   * `signal` is aborted when Riff stops waiting. Honor it: without that, a slow send is reported as
+   * a timeout, completes anyway, and a retry creates a second one.
+   */
+  send(artifact: PromptArtifact, client: GitHubClient, signal?: AbortSignal): Promise<SubmitResult>;
 }
 
 export interface GitHubHostOptions extends GitHubClientOptions {
@@ -61,7 +65,7 @@ export class GitHubHost implements RiffHost {
   }
 
   async resolveReference(request: ResolveReferenceRequest): Promise<ResolveReferenceResult> {
-    const direct = await this.#resolveDirect(request.phrase, request.kind);
+    const direct = await this.#resolveDirect(request.phrase, request.kind, request.signal);
     if (direct.length > 0) return { candidates: direct };
 
     const kind = request.kind ?? "unknown";
@@ -164,7 +168,7 @@ export class GitHubHost implements RiffHost {
           }`,
         };
       }
-      return named.send(artifact, this.#client);
+      return named.send(artifact, this.#client, options.signal);
     }
 
     const destination = destinations.find((candidate) => candidate.default) ?? destinations[0];
@@ -178,7 +182,7 @@ export class GitHubHost implements RiffHost {
       };
     }
 
-    return destination.send(artifact, this.#client);
+    return destination.send(artifact, this.#client, options.signal);
   }
 
   async environment(): Promise<HostEnvironment> {
@@ -216,15 +220,15 @@ export class GitHubHost implements RiffHost {
   }
 
   /** URLs, `owner/repo#123`, and spoken numbers resolve exactly, with no search and no ambiguity. */
-  async #resolveDirect(phrase: string, kind?: string): Promise<ContextItem[]> {
+  async #resolveDirect(phrase: string, kind?: string, signal?: AbortSignal): Promise<ContextItem[]> {
     const url = GITHUB_URL.exec(phrase);
     if (url) {
       const [, owner, repo, type, id] = url;
       const repository = `${owner}/${repo}`;
       if (type === "commit") {
-        return [await this.#commit(repository, id!)];
+        return [await this.#commit(repository, id!, signal)];
       }
-      return [await this.#issue(repository, Number(id))];
+      return [await this.#issue(repository, Number(id), signal)];
     }
 
     // Any other link is recorded and never mined for identifiers. A tracker URL is full of digits
@@ -248,7 +252,7 @@ export class GitHubHost implements RiffHost {
     if (shorthand) {
       const repository =
         shorthand[1] && shorthand[2] ? `${shorthand[1]}/${shorthand[2]}` : this.#options.repository;
-      if (repository) return [await this.#issue(repository, Number(shorthand[3]))];
+      if (repository) return [await this.#issue(repository, Number(shorthand[3]), signal)];
     }
 
     // "Go look at 412" only means a number when something in the sentence says it does, otherwise
@@ -259,24 +263,24 @@ export class GitHubHost implements RiffHost {
     if (numbered && numberIsMeant && this.#options.repository) {
       const number = Number(numbered[1] ?? numbered[2]);
       if (Number.isFinite(number) && number > 0) {
-        return [await this.#issue(this.#options.repository, number)];
+        return [await this.#issue(this.#options.repository, number, signal)];
       }
     }
 
     return [];
   }
 
-  async #issue(repository: string, number: number): Promise<ContextItem> {
-    const issue = await this.#client.get<IssueLike>(`/repos/${repository}/issues/${number}`);
+  async #issue(repository: string, number: number, signal?: AbortSignal): Promise<ContextItem> {
+    const issue = await this.#client.get<IssueLike>(`/repos/${repository}/issues/${number}`, {}, { signal });
     return { ...toContextItem(issue, repository), confidence: 1 };
   }
 
-  async #commit(repository: string, sha: string): Promise<ContextItem> {
+  async #commit(repository: string, sha: string, signal?: AbortSignal): Promise<ContextItem> {
     const commit = await this.#client.get<{
       sha: string;
       html_url: string;
       commit: { message: string; author?: { name?: string; date?: string } };
-    }>(`/repos/${repository}/commits/${sha}`);
+    }>(`/repos/${repository}/commits/${sha}`, {}, { signal });
 
     return {
       referenceId: `commit-${repository}-${commit.sha.slice(0, 7)}`,
@@ -400,7 +404,7 @@ export function issueDestination(options: {
     id: options.id ?? "issue",
     label: options.label ?? `New issue in ${options.repository}`,
     ...(options.default ? { default: true } : {}),
-    async send(artifact, client) {
+    async send(artifact, client, signal) {
       const issue = await client.post<{ number: number; html_url: string }>(
         `/repos/${options.repository}/issues`,
         {
@@ -409,6 +413,7 @@ export function issueDestination(options: {
           ...(options.labels ? { labels: options.labels } : {}),
           ...(options.assignees ? { assignees: options.assignees } : {}),
         },
+        { ...(signal ? { signal } : {}) },
       );
       return {
         submitted: true,

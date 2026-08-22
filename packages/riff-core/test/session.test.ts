@@ -582,6 +582,37 @@ describe("RiffSession", () => {
     assert.match(artifact.rendered, /## Details/, "submitted text must match the configured profile");
   });
 
+  it("never reissues a motif id that a retired motif still holds", async () => {
+    const seeded = new MemoryStore({
+      motifs: [
+        { id: "m1", text: "never touch the generated files", scope: "user", createdAt: "t0" },
+        { id: "m2", text: "keep the diffs small", scope: "user", createdAt: "t0", retiredAt: "t1" },
+      ],
+    });
+    const fresh = new FakeProvider();
+    const reopened = new RiffSession({ bundle, provider: fresh, host, store: seeded });
+    await reopened.start();
+    await settle();
+
+    fresh.say("and always run the linter before you're done");
+    await settle();
+    const callId = fresh.callTool("motifs", {
+      action: "save",
+      text: "always run the linter before you're done",
+    });
+    await settle();
+
+    const saved = fresh.resultFor(callId);
+    assert.equal(saved.saved, true);
+    assert.notEqual(saved.motif_id, "m2", "m2 is retired but still exists; reusing it would overwrite it");
+
+    const listed = fresh.callTool("motifs", { action: "list" });
+    await settle();
+    const ids = fresh.resultFor(listed).motifs.map((m: { motif_id: string }) => m.motif_id);
+    assert.ok(!ids.includes("m2"), "a retired motif is not offered");
+    assert.ok(ids.includes(saved.motif_id));
+  });
+
   it("refuses to submit a take with nothing in it", async () => {
     const callId = provider.callTool("submit_prompt", {});
     await settle();

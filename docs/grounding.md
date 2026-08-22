@@ -54,9 +54,17 @@ consecutive utterances (default 4), so a line assembled across those boundaries 
 span, counting repeats — upper-bounds the ordered match, so spans below the threshold are skipped
 without any risk of a false rejection.
 
-**4. Align.** Longest common subsequence between candidate and span. Order-sensitive by
-construction, which is why shuffling words inside a sentence fails even though every word is
-present.
+**4. Align.** Longest common subsequence between candidate and span, over the *whole* span.
+Order-sensitive by construction, which is why shuffling words inside a sentence fails even though
+every word is present.
+
+The alignment uses Hirschberg's divide and conquer, which holds two DP rows rather than a full
+table. That is not an optimization, it is what makes the check correct. Earlier versions bounded the
+comparison instead — first the candidate, then the source — and every bound was wrong in a way
+nobody could see from the outside: a cap on the candidate let invented text past the gate, and a cap
+on the source rejected lines that were entirely the speaker's, including one that simply kept the
+start and end of a long turn. Linear memory removes the need for a cap, so there is no longer a
+bound that can be wrong.
 
 **5. Score.** The ratio is *matched meaningful tokens over total meaningful tokens*. Connective words
 listed in `freeTokens` ("the", "a", "and", "to") and filler are excluded from the denominator: they
