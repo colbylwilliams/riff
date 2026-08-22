@@ -71,6 +71,14 @@ const bundle = loadBundle(await (await fetch("/riff-agent.bundle.json")).json())
 
 /** Everything torn down and rebuilt each time the mic is started. */
 let run = null;
+/**
+ * Which run is current.
+ *
+ * Starting and stopping are both asynchronous, so a teardown can still be in flight when the next
+ * session starts. Without a way to tell whose continuation is running, the old one's tail resets the
+ * chrome for the new session and the old session's events keep painting the panes after it closed.
+ */
+let runSequence = 0;
 let lastArtifact = null;
 let lastSubmission = null;
 let agentEntry = null;
@@ -96,11 +104,13 @@ function buildHost() {
 
 async function start() {
   const mode = document.querySelector('input[name="mode"]:checked').value;
+  const id = ++runSequence;
   reset();
   setMicBusy(true);
 
+  let started;
   try {
-    run = mode === "live" ? await buildLive() : buildScripted();
+    started = mode === "live" ? await buildLive() : buildScripted();
   } catch (error) {
     // A refused microphone or a missing key should read as a normal outcome, not a dead page.
     addEntry({ head: `could not start ${mode} mode`, note: error.message, variant: "rejected" });
@@ -108,10 +118,18 @@ async function start() {
     return;
   }
 
-  run.session.on(handleEvent);
+  // Building live mode awaits the microphone, which is long enough for someone to have given up and
+  // started something else. Whatever was built is then already obsolete.
+  if (id !== runSequence) return teardown(started);
+
+  started.id = id;
+  run = started;
+  started.session.on((event) => {
+    if (started.id === runSequence) handleEvent(event);
+  });
 
   try {
-    await run.session.start();
+    await started.session.start();
   } catch (error) {
     addEntry({ head: "connection failed", note: error.message, variant: "rejected" });
     await stop();
@@ -121,12 +139,10 @@ async function start() {
   setMicRunning(true);
   ui.typeInput.disabled = false;
 
-  if (run.scripted) {
-    const started = run;
-    await run.scripted.run();
-    // Identity, not truthiness: stopping and starting again while the last step was still sleeping
-    // would otherwise land here holding a new session and tear that one down instead.
-    if (run === started) await stop();
+  if (started.scripted) {
+    await started.scripted.run();
+    // Reaching the end of the script ends that session — but only if it is still the current one.
+    if (started.id === runSequence) await stop();
   }
 }
 
@@ -134,19 +150,26 @@ async function stop() {
   const current = run;
   run = null;
   if (!current) return;
+  await teardown(current);
 
-  current.scripted?.stop();
-  current.stopMeter?.();
-  for (const track of current.stream?.getTracks() ?? []) track.stop();
-  await current.session.stop("stopped");
-  await current.audioContext?.close().catch(() => {});
-
+  // Skipped when something newer started while this was tearing down, so a slow stop cannot reset
+  // the chrome out from under the session that replaced it.
+  if (run) return;
   setMicRunning(false);
   setMicBusy(false);
   ui.typeInput.disabled = true;
   ui.interrupt.hidden = true;
   ui.meter.hidden = true;
   ui.pending.hidden = true;
+}
+
+/** Releases everything one run holds: the script, the meter, the microphone, the session. */
+async function teardown(current) {
+  current.scripted?.stop();
+  current.stopMeter?.();
+  for (const track of current.stream?.getTracks() ?? []) track.stop();
+  await current.session.stop("stopped");
+  await current.audioContext?.close().catch(() => {});
 }
 
 function buildScripted() {
