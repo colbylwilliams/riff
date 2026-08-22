@@ -48,12 +48,17 @@
       "description": "The prompt as the downstream agent receives it."
     },
     "target": { "type": "string" },
-    "status": { "type": "string", "enum": ["drafting", "ready", "submitted", "parked", "discarded"] }
+    "status": { "type": "string", "enum": ["drafting", "ready", "submitted", "parked", "discarded"] },
+    "submittedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the host confirmed the send. Distinct from updatedAt, which tracks edits."
+    }
   },
   "$defs": {
     "line": {
       "type": "object",
-      "required": ["id", "section", "text", "order", "grounding"],
+      "required": ["id", "section", "text", "order", "sourceUtteranceIds", "grounding"],
       "additionalProperties": false,
       "properties": {
         "id": { "type": "string" },

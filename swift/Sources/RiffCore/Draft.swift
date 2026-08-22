@@ -114,6 +114,11 @@ public struct DraftOperationOutcome: Sendable {
 
 private let orderStep: Double = 1000
 
+/// A take that has been sent or thrown away. Nothing may reopen or alter it.
+public func isTerminal(_ take: Take) -> Bool {
+    take.status == .submitted || take.status == .discarded
+}
+
 /// One draft prompt. A session can hold several, so a change of subject does not destroy the last one.
 public final class Take: @unchecked Sendable {
     public let id: String
@@ -375,7 +380,17 @@ private func applyUpsert(_ take: Take, _ operation: DraftOperation, _ context: A
     }
 
     let existing = operation.lineId.flatMap { take.line($0) }
-    let id = existing?.id ?? operation.lineId ?? take.nextLineId()
+    if let supplied = operation.lineId, existing == nil {
+        // Accepting an unknown id would create a line outside the generated sequence, and the next
+        // ordinary insert would reuse that id and silently overwrite this line.
+        return DraftOperationOutcome(
+            op: "upsert_line",
+            lineId: supplied,
+            accepted: false,
+            reason: "no line \(supplied) in this take; omit line_id to add a new one"
+        )
+    }
+    let id = existing?.id ?? take.nextLineId()
     let order: Double
     if let existing, operation.afterLineId == nil {
         order = existing.order
@@ -470,8 +485,12 @@ public final class DraftBook: @unchecked Sendable {
     }
 
     @discardableResult
-    public func switchTo(_ id: String) -> Take? {
+    public func switchTo(_ id: String) throws -> Take? {
         guard let take = takesById[id] else { return nil }
+        // Switching to a finished take would make it the target of the next thing spoken.
+        guard !isTerminal(take) else {
+            throw RiffError.tool("take \"\(id)\" was already \(take.status.rawValue); it cannot be reopened")
+        }
         if let activeId, activeId != id, let previous = takesById[activeId], previous.status == .drafting {
             previous.status = .parked
         }
@@ -481,8 +500,13 @@ public final class DraftBook: @unchecked Sendable {
     }
 
     @discardableResult
-    public func park(_ id: String) -> Take? {
+    public func park(_ id: String) throws -> Take? {
         guard let take = takesById[id] else { return nil }
+        // Parking a finished take would move it out of a terminal state, and switching back would
+        // then promote it to drafting — which is how every guard downstream gets bypassed.
+        guard !isTerminal(take) else {
+            throw RiffError.tool("take \"\(id)\" was already \(take.status.rawValue); it cannot be parked")
+        }
         take.status = .parked
         if activeId == id {
             activeId = takes().first { $0.id != id && $0.status == .drafting }?.id
@@ -491,8 +515,11 @@ public final class DraftBook: @unchecked Sendable {
     }
 
     @discardableResult
-    public func discard(_ id: String) -> Bool {
+    public func discard(_ id: String) throws -> Bool {
         guard let take = takesById[id] else { return false }
+        guard take.status != .submitted else {
+            throw RiffError.tool("take \"\(id)\" was already submitted")
+        }
         take.status = .discarded
         if activeId == id { activeId = nil }
         return true

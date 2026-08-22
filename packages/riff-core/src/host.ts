@@ -22,6 +22,8 @@ export interface RiffHost {
 }
 
 export interface ResolveReferenceRequest {
+  /** Aborted when Riff gives up waiting. Honor it: a timed-out call may be retried. */
+  signal?: AbortSignal;
   phrase: string;
   kind?: string;
   recency?: "latest" | "today" | "this_week" | "this_month" | "any";
@@ -36,6 +38,8 @@ export interface ResolveReferenceResult {
 }
 
 export interface LookupTermRequest {
+  /** Aborted when Riff gives up waiting. Honor it: a timed-out call may be retried. */
+  signal?: AbortSignal;
   heard: string;
   context?: string;
   kind?: string;
@@ -46,6 +50,8 @@ export interface LookupTermResult {
 }
 
 export interface RecallPromptsRequest {
+  /** Aborted when Riff gives up waiting. Honor it: a timed-out call may be retried. */
+  signal?: AbortSignal;
   query: string;
   recency?: "latest" | "today" | "this_week" | "this_month" | "any";
   status?: "any" | "submitted" | "parked";
@@ -69,6 +75,11 @@ export interface RecallPromptsResult {
 export interface SubmitOptions {
   target?: string;
   keepOpen?: boolean;
+  /**
+   * Aborted when Riff gives up waiting. Submission has a side effect the speaker can see, so a host
+   * that cannot honor this must make sending idempotent, or a timeout plus a retry sends twice.
+   */
+  signal?: AbortSignal;
 }
 
 export interface SubmitResult {

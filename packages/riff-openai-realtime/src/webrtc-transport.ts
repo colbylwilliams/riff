@@ -83,35 +83,46 @@ export async function connectWebRTC(options: WebRTCTransportOptions): Promise<Re
 
   for (const track of options.tracks ?? []) peer.addTrack(track);
 
-  const offer = await peer.createOffer();
-  await peer.setLocalDescription(offer);
+  // Everything from here can fail, and the peer connection and data channel are already live.
+  try {
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
 
-  const response = await fetch(endpointWithModel(options.url ?? DEFAULT_URL, options.model), {
-    method: "POST",
-    body: offer.sdp ?? "",
-    headers: {
-      Authorization: `Bearer ${credentials.token}`,
-      "Content-Type": "application/sdp",
-    },
-    ...(options.signal ? { signal: options.signal } : {}),
-  });
-
-  if (!response.ok) {
-    throw new Error(`the realtime call was refused (${response.status}): ${await safeText(response)}`);
-  }
-
-  await peer.setRemoteDescription({ type: "answer", sdp: await response.text() });
-
-  await new Promise<void>((resolve, reject) => {
-    if (channel.readyState === "open") return resolve();
-    const onAbort = () => reject(new Error("connection aborted"));
-    options.signal?.addEventListener("abort", onAbort, { once: true });
-    channel.addEventListener("open", () => {
-      options.signal?.removeEventListener("abort", onAbort);
-      resolve();
+    const response = await fetch(endpointWithModel(options.url ?? DEFAULT_URL, options.model), {
+      method: "POST",
+      body: offer.sdp ?? "",
+      headers: {
+        Authorization: `Bearer ${credentials.token}`,
+        "Content-Type": "application/sdp",
+      },
+      ...(options.signal ? { signal: options.signal } : {}),
     });
-    channel.addEventListener("error", () => reject(new Error("the realtime data channel failed to open")));
-  });
+
+    if (!response.ok) {
+      throw new Error(`the realtime call was refused (${response.status}): ${await safeText(response)}`);
+    }
+
+    await peer.setRemoteDescription({ type: "answer", sdp: await response.text() });
+
+    await new Promise<void>((resolve, reject) => {
+      if (options.signal?.aborted) return reject(new Error("connection aborted"));
+      if (channel.readyState === "open") return resolve();
+      const onAbort = () => reject(new Error("connection aborted"));
+      options.signal?.addEventListener("abort", onAbort, { once: true });
+      channel.addEventListener("open", () => {
+        options.signal?.removeEventListener("abort", onAbort);
+        resolve();
+      });
+      channel.addEventListener("error", () => reject(new Error("the realtime data channel failed to open")));
+    });
+  } catch (error) {
+    try {
+      channel.close();
+    } finally {
+      peer.close();
+    }
+    throw error;
+  }
 
   return {
     kind: "webrtc",

@@ -37,6 +37,8 @@ public final class ToolRuntime {
     /// Read when an artifact is built rather than stored, so a prompt submitted mid-session carries
     /// the negotiated model, session id, and duration instead of whatever was known before connecting.
     public var provenance: (() -> PromptArtifact.Provenance)?
+    /// Render profile the session was configured with, so a preview and a submission agree.
+    public var renderProfile: String?
 
     var onLexiconChanged: (() -> Void)?
     var onDraftChanged: ((Take) -> Void)?
@@ -113,19 +115,11 @@ public final class ToolRegistry {
 
     /// Bounds a tool call. A timeout is a result the model can act on; silence is not.
     private func run(name: String, args: JSONValue, timeoutMs: Int) async throws -> JSONValue {
-        guard timeoutMs > 0 else { return try await run(name: name, args: args) }
-
-        return try await withThrowingTaskGroup(of: JSONValue.self) { group in
-            group.addTask { try await self.run(name: name, args: args) }
-            group.addTask {
-                try await Task.sleep(for: .milliseconds(timeoutMs))
-                throw RiffError.tool("\(name) did not answer within \(timeoutMs)ms; tell them it is not responding")
-            }
-            defer { group.cancelAll() }
-            guard let first = try await group.next() else {
-                throw RiffError.tool("\(name) produced no result")
-            }
-            return first
+        try await withDeadline(
+            milliseconds: timeoutMs,
+            onTimeout: { RiffError.tool("\(name) did not answer within \(timeoutMs)ms; tell them it is not responding") }
+        ) { [self] in
+            try await run(name: name, args: args)
         }
     }
 
@@ -187,14 +181,14 @@ public final class ToolRegistry {
             })),
             ("ready", .bool(take.isReady(policy: runtime.bundle.policy))),
             ("rendered", includeRendered
-                ? .string(try renderPrompt(take, options: RenderOptions(config: runtime.bundle.render)))
+                ? .string(try renderPrompt(take, options: RenderOptions(config: runtime.bundle.render, profile: runtime.renderProfile)))
                 : nil),
         ])
     }
 
     private func fidelity(of take: Take) throws -> Double {
         try buildArtifact(take, options: BuildArtifactOptions(
-            render: RenderOptions(config: runtime.bundle.render),
+            render: RenderOptions(config: runtime.bundle.render, profile: runtime.renderProfile),
             lexicon: runtime.lexicon,
             utteranceCount: runtime.ledger.count,
             now: runtime.now()
@@ -442,7 +436,7 @@ public final class ToolRegistry {
             guard let id = args["motif_id"]?.stringValue, let motif = runtime.motifs[id] else {
                 throw RiffError.tool("no motif \"\(args["motif_id"]?.stringValue ?? "(missing motif_id)")\"")
             }
-            let take = try runtime.book.active()
+            let take = try openTake(from: .object([:]))
             if take.lines().contains(where: { $0.motifId == motif.id }) {
                 return json([("attached", .bool(false)), ("reason", .string("already on this take"))])
             }
@@ -467,7 +461,7 @@ public final class ToolRegistry {
             ])
 
         case "detach":
-            let take = try runtime.book.active()
+            let take = try openTake(from: .object([:]))
             guard let line = take.lines().first(where: { $0.motifId == args["motif_id"]?.stringValue }) else {
                 return json([("detached", .bool(false)), ("reason", .string("not on this take"))])
             }
@@ -508,14 +502,14 @@ public final class ToolRegistry {
             ])
 
         case "switch":
-            guard let id = args["take_id"]?.stringValue, let take = book.switchTo(id) else {
+            guard let id = args["take_id"]?.stringValue, let take = try book.switchTo(id) else {
                 throw RiffError.tool("no take \"\(args["take_id"]?.stringValue ?? "(missing take_id)")\"")
             }
             runtime.onTakeChanged?(take)
             return json([("take_id", .string(take.id)), ("draft", try draftView(take))])
 
         case "park":
-            guard let id = args["take_id"]?.stringValue ?? book.activeId, let take = book.park(id) else {
+            guard let id = args["take_id"]?.stringValue ?? book.activeId, let take = try book.park(id) else {
                 throw RiffError.tool("there is no take to park")
             }
             runtime.onTakeChanged?(book.activeId.flatMap { book.take($0) })
@@ -535,7 +529,7 @@ public final class ToolRegistry {
             }))])
 
         case "discard":
-            guard let id = args["take_id"]?.stringValue ?? book.activeId, book.discard(id) else {
+            guard let id = args["take_id"]?.stringValue ?? book.activeId, try book.discard(id) else {
                 throw RiffError.tool("there is no take to discard")
             }
             runtime.onTakeChanged?(book.activeId.flatMap { book.take($0) })
@@ -567,7 +561,7 @@ public final class ToolRegistry {
         take.status = .ready
 
         let artifact = try buildArtifact(take, options: BuildArtifactOptions(
-            render: RenderOptions(config: runtime.bundle.render),
+            render: RenderOptions(config: runtime.bundle.render, profile: runtime.renderProfile),
             lexicon: runtime.lexicon,
             utteranceCount: runtime.ledger.count,
             now: runtime.now(),
@@ -587,11 +581,22 @@ public final class ToolRegistry {
             throw error
         }
 
+        var storeWarning: String?
+
         if result.submitted {
             take.status = keepOpen ? .drafting : .submitted
             var stored = artifact
             stored.status = take.status
-            try await runtime.store.saveArtifact(stored)
+            stored.submittedAt = runtime.now()
+
+            // The destination already has the prompt. Reporting a failed save as a failed
+            // submission would invite a retry that sends it twice.
+            do {
+                try await runtime.store.saveArtifact(stored)
+            } catch {
+                storeWarning = "it was sent, but saving a copy failed: \(error)"
+            }
+
             runtime.onSubmitted?(stored)
             if !keepOpen {
                 runtime.book.clearActive()
@@ -607,6 +612,7 @@ public final class ToolRegistry {
             ("destination", jsonString(result.destination)),
             ("url", jsonString(result.url)),
             ("message", jsonString(result.message)),
+            ("warning", jsonString(storeWarning)),
         ])
     }
 }

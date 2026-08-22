@@ -82,6 +82,7 @@ public final class RiffSession {
     private let host: any RiffHost
     private let store: any RiffStore
     private let overrides: SessionOverrides
+    private let renderProfile: String?
     private let continuation: AsyncStream<RiffEvent>.Continuation
 
     private var connection: (any RealtimeConnection)?
@@ -99,13 +100,15 @@ public final class RiffSession {
         provider: any RealtimeProvider,
         host: any RiffHost = NullHost(),
         store: any RiffStore = MemoryStore(),
-        overrides: SessionOverrides = SessionOverrides()
+        overrides: SessionOverrides = SessionOverrides(),
+        renderProfile: String? = nil
     ) {
         self.bundle = bundle
         self.provider = provider
         self.host = host
         self.store = store
         self.overrides = overrides
+        self.renderProfile = renderProfile
 
         let lexicon = Lexicon(bundle.lexicon.terms)
         self.lexicon = lexicon
@@ -148,6 +151,7 @@ public final class RiffSession {
                 store: store
             )
             runtime.motifs = motifs
+            runtime.renderProfile = renderProfile
             runtime.provenance = { [weak self] in self?.provenance() ?? PromptArtifact.Provenance(fidelity: 0, utteranceCount: 0, bodyTokens: 0, agentAuthoredTokens: 0) }
             runtime.onLexiconChanged = { [weak self] in
                 guard let self else { return }
@@ -240,7 +244,7 @@ public final class RiffSession {
     public func artifact() throws -> PromptArtifact? {
         guard let id = book.activeId, let take = book.take(id) else { return nil }
         return try buildArtifact(take, options: BuildArtifactOptions(
-            render: RenderOptions(config: bundle.render),
+            render: RenderOptions(config: bundle.render, profile: renderProfile),
             lexicon: lexicon,
             utteranceCount: ledger.count,
             provenance: provenance()
@@ -255,7 +259,9 @@ public final class RiffSession {
             setState(.listening)
 
         case .speechStarted:
-            if state == .speaking || state == .thinking { emit(.interrupted) }
+            // Automatic barge-in has to do everything an explicit interrupt does. Emitting the
+            // event without cancelling leaves buffered output playing over whoever just started.
+            interrupt()
             setState(.listening)
 
         case .transcriptCompleted(_, let text, let confidence):
@@ -361,7 +367,7 @@ public final class RiffSession {
 
     private func emitDraft(_ take: Take) {
         guard let artifact = try? buildArtifact(take, options: BuildArtifactOptions(
-            render: RenderOptions(config: bundle.render),
+            render: RenderOptions(config: bundle.render, profile: renderProfile),
             lexicon: lexicon,
             utteranceCount: ledger.count
         )) else { return }

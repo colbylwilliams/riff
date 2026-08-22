@@ -242,3 +242,45 @@ describe("spoken references", () => {
     assert.equal(new URL(calls[0]!.url).pathname, "/repos/acme/web/issues/412");
   });
 });
+
+describe("recalling earlier prompts", () => {
+  const artifact = (id: string, submittedAt: string | undefined, title: string) =>
+    ({
+      id,
+      title: { text: title, origin: "derived" },
+      rendered: `# ${title}`,
+      status: "submitted",
+      updatedAt: "2026-08-21T00:00:00.000Z",
+      ...(submittedAt ? { submittedAt } : {}),
+    }) as never;
+
+  const storeWith = (items: unknown[]) =>
+    ({ listArtifacts: async () => items }) as never;
+
+  it("filters by when a prompt was sent, not when its draft was last touched", async () => {
+    const recent = new Date(Date.now() - 2 * 86_400_000).toISOString();
+    const old = new Date(Date.now() - 90 * 86_400_000).toISOString();
+    const host = new GitHubHost({
+      token: "t",
+      fetch: async () => new Response("{}"),
+      store: storeWith([artifact("new", recent, "avatars"), artifact("old", old, "avatars")]),
+    });
+
+    const { prompts } = await host.recallPrompts({ query: "avatars", recency: "this_week" });
+
+    assert.deepEqual(prompts.map((p) => p.promptId), ["new"]);
+    assert.equal(prompts[0]?.submittedAt, recent);
+  });
+
+  it("returns a single prompt for 'latest'", async () => {
+    const when = new Date().toISOString();
+    const host = new GitHubHost({
+      token: "t",
+      fetch: async () => new Response("{}"),
+      store: storeWith([artifact("a", when, "avatars"), artifact("b", when, "avatars")]),
+    });
+
+    const { prompts } = await host.recallPrompts({ query: "avatars", recency: "latest" });
+    assert.equal(prompts.length, 1);
+  });
+});

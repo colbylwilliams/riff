@@ -139,6 +139,7 @@ export class RiffSession {
         references: this.#references,
         motifs: this.#motifs,
         now: this.#now,
+        ...(this.#options.renderProfile ? { renderProfile: this.#options.renderProfile } : {}),
         provenance: () => this.#provenance(),
         onLexiconChanged: () => {
           this.#connection?.updateSession({ vocabulary: this.#vocabulary() });
@@ -265,9 +266,9 @@ export class RiffSession {
         break;
 
       case "speech.started":
-        if (this.#state === "speaking" || this.#state === "thinking") {
-          this.#emit({ type: "interrupted" });
-        }
+        // Automatic barge-in has to do everything an explicit interrupt does. Emitting the event
+        // without cancelling leaves buffered output playing over whoever just started talking.
+        this.interrupt();
         this.#setState("listening");
         break;
 

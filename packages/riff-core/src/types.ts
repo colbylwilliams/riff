@@ -111,6 +111,8 @@ export interface PromptArtifact {
   rendered: string;
   target?: string;
   status?: TakeStatus;
+  /** When the host confirmed the send. Distinct from `updatedAt`, which tracks edits. */
+  submittedAt?: string;
 }
 
 export interface GroundingConfig {

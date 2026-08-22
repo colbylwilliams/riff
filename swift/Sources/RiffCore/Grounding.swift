@@ -37,7 +37,7 @@ public struct GroundingChecker: Sendable {
     private let filler: FillerMatcher
 
     private static let maxCandidateTokens = 240
-    private static let maxSpanTokens = 600
+    static let maxSpanTokens = 600
 
     public init(config: GroundingConfig, lexicon: Lexicon) {
         self.config = config
@@ -100,27 +100,31 @@ public struct GroundingChecker: Sendable {
             // Multiset containment upper-bounds the ordered match, so this prunes without false negatives.
             guard containment(candCounts, span.tokens, totalSubstantive) >= threshold else { continue }
 
-            let spanTokens = span.tokens.count > Self.maxSpanTokens
-                ? Array(span.tokens.suffix(Self.maxSpanTokens))
-                : span.tokens
-            let offset = span.tokens.count - spanTokens.count
+            // Aligning only a suffix of a long span would reject a line quoted from the start of a
+            // long turn: containment passes against the whole span, then LCS scores near zero
+            // against the tail. Overlapping windows keep the cost bounded without dropping source.
+            for offset in windowOffsets(spanLength: span.tokens.count, candidateLength: candTokens.count) {
+                let upper = min(offset + Self.maxSpanTokens, span.tokens.count)
+                let spanTokens = Array(span.tokens[offset..<upper])
 
-            var matchedIndexes = Set<Int>()
-            var matchedOwners = Set<String>()
-            var matchedSubstantive = 0
+                var matchedIndexes = Set<Int>()
+                var matchedOwners = Set<String>()
+                var matchedSubstantive = 0
 
-            for pair in longestCommonSubsequence(candTokens, spanTokens) {
-                matchedIndexes.insert(pair.0)
-                if !ignorable(candTokens[pair.0]) { matchedSubstantive += 1 }
-                let ownerIndex = pair.1 + offset
-                if ownerIndex < span.owners.count { matchedOwners.insert(span.owners[ownerIndex]) }
+                for pair in longestCommonSubsequence(candTokens, spanTokens) {
+                    matchedIndexes.insert(pair.0)
+                    if !ignorable(candTokens[pair.0]) { matchedSubstantive += 1 }
+                    let ownerIndex = pair.1 + offset
+                    if ownerIndex < span.owners.count { matchedOwners.insert(span.owners[ownerIndex]) }
+                }
+
+                let ratio = Double(matchedSubstantive) / Double(totalSubstantive)
+                if best == nil || ratio > best!.ratio {
+                    best = (ratio, span, matchedIndexes, matchedOwners)
+                }
+                if ratio == 1 { break }
             }
-
-            let ratio = Double(matchedSubstantive) / Double(totalSubstantive)
-            if best == nil || ratio > best!.ratio {
-                best = (ratio, span, matchedIndexes, matchedOwners)
-            }
-            if ratio == 1 { break }
+            if best?.ratio == 1 { break }
         }
 
         guard let best else { return empty }
@@ -170,6 +174,21 @@ public struct GroundingChecker: Sendable {
         for (token, count) in candCounts { shared += min(count, spanCounts[token] ?? 0) }
         return Double(shared) / Double(total)
     }
+}
+
+/// Start offsets of overlapping windows covering a span. Windows overlap by the candidate's length
+/// so a line straddling a window boundary is still seen whole by at least one of them.
+func windowOffsets(spanLength: Int, candidateLength: Int) -> [Int] {
+    guard spanLength > GroundingChecker.maxSpanTokens else { return [0] }
+    let stride = max(1, GroundingChecker.maxSpanTokens - candidateLength)
+    var offsets: [Int] = []
+    var start = 0
+    while start < spanLength {
+        offsets.append(start)
+        if start + GroundingChecker.maxSpanTokens >= spanLength { break }
+        start += stride
+    }
+    return offsets
 }
 
 /// Returns matched index pairs of the longest common subsequence of two token sequences.

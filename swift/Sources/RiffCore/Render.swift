@@ -49,6 +49,8 @@ public struct PromptArtifact: Codable, Sendable {
     public var rendered: String
     public var target: String?
     public var status: TakeStatus?
+    /// When the host confirmed the send. Distinct from `updatedAt`, which tracks edits.
+    public var submittedAt: String?
 }
 
 public struct RenderOptions: Sendable {

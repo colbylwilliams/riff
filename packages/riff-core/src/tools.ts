@@ -10,6 +10,11 @@ import { isPlausibleMishearing } from "./lexicon.ts";
 import { validate } from "./schema.ts";
 import { tidyWhitespace } from "./text.ts";
 
+/** Passed to a handler so host calls can be abandoned when Riff stops waiting. */
+export interface ToolCallSignal {
+  signal?: AbortSignal;
+}
+
 export interface ToolOutcome {
   ok: boolean;
   result: unknown;
@@ -35,6 +40,8 @@ export interface ToolRuntime extends ToolRuntimeEvents {
   references: Map<string, ContextItem>;
   motifs: Map<string, Motif>;
   now(): string;
+  /** Render profile the session was configured with, so a preview and a submission agree. */
+  renderProfile?: string;
   /**
    * Read when an artifact is built rather than stored, so a prompt submitted mid-session carries
    * the negotiated model, session id, and duration instead of whatever was known before connecting.
@@ -47,20 +54,31 @@ export interface ToolRegistry {
   dispatch(name: string, argumentsJson: string): Promise<ToolOutcome>;
 }
 
-type Handler = (args: any, runtime: ToolRuntime) => Promise<unknown> | unknown;
+type Handler = (args: any, runtime: ToolRuntime, call: ToolCallSignal) => Promise<unknown> | unknown;
 
 /**
  * Bounds a tool call. A host that never returns would otherwise hold the whole batch open, and the
  * single continuation the model is waiting for would never be requested — the conversation just
  * stops. A timeout is a result the model can act on; silence is not.
+ *
+ * The controller is aborted when the timeout fires, so a host that honors it stops work rather than
+ * completing a submission the model has already been told failed.
  */
-function withToolTimeout<T>(work: Promise<T>, timeoutMs: number, name: string): Promise<T> {
-  if (!(timeoutMs > 0)) return work;
+function withToolTimeout<T>(
+  start: (call: ToolCallSignal) => Promise<T>,
+  timeoutMs: number,
+  name: string,
+): Promise<T> {
+  if (!(timeoutMs > 0)) return start({});
+
+  const controller = new AbortController();
+  const work = start({ signal: controller.signal });
+
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error(`${name} did not answer within ${timeoutMs}ms; tell them it is not responding`)),
-      timeoutMs,
-    );
+    const timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error(`${name} did not answer within ${timeoutMs}ms; tell them it is not responding`));
+    }, timeoutMs);
     timer.unref?.();
     work.then(
       (value) => { clearTimeout(timer); resolve(value); },
@@ -108,7 +126,7 @@ export function createToolRegistry(runtime: ToolRuntime): ToolRegistry {
       try {
         const timeoutMs = runtime.bundle.session.limits.toolTimeoutMs;
         const outcome = await withToolTimeout(
-          Promise.resolve(handler(validated.value, runtime)),
+          (call) => Promise.resolve(handler(validated.value, runtime, call)),
           timeoutMs,
           name,
         );
@@ -157,13 +175,21 @@ function draftView(take: Take, runtime: ToolRuntime, includeRendered = false) {
       url: item.url,
     })),
     ready: isReady(take, runtime.bundle.policy),
-    ...(includeRendered ? { rendered: renderPrompt(take, { config: runtime.bundle.render }) } : {}),
+    ...(includeRendered
+      ? {
+          rendered: renderPrompt(take, {
+            config: runtime.bundle.render,
+            ...(runtime.renderProfile ? { profile: runtime.renderProfile } : {}),
+          }),
+        }
+      : {}),
   };
 }
 
 function fidelityOf(take: Take, runtime: ToolRuntime): number {
   return buildArtifact(take, {
     config: runtime.bundle.render,
+    ...(runtime.renderProfile ? { profile: runtime.renderProfile } : {}),
     lexicon: runtime.lexicon,
     utteranceCount: runtime.ledger.size,
     now: runtime.now(),
@@ -204,9 +230,11 @@ const HANDLERS: Record<string, Handler> = {
   async resolve_reference(
     args: { phrase: string; kind?: string; recency?: string; actor?: string; limit?: number },
     runtime,
+    call,
   ) {
     const result = await runtime.host.resolveReference({
       phrase: args.phrase,
+      ...(call.signal ? { signal: call.signal } : {}),
       ...(args.kind && args.kind !== "unknown" ? { kind: args.kind } : {}),
       ...(args.recency ? { recency: args.recency as never } : {}),
       ...(args.actor ? { actor: args.actor } : {}),
@@ -239,10 +267,11 @@ const HANDLERS: Record<string, Handler> = {
     };
   },
 
-  async lookup_term(args: { heard: string; context?: string; kind?: string }, runtime) {
+  async lookup_term(args: { heard: string; context?: string; kind?: string }, runtime, call) {
     const local = runtime.lexicon.lookup(args.heard).map((term) => ({ ...term, confidence: 1, source: "lexicon" }));
     const remote = await runtime.host.lookupTerm({
       heard: args.heard,
+      ...(call.signal ? { signal: call.signal } : {}),
       ...(args.context ? { context: args.context } : {}),
       ...(args.kind && args.kind !== "unknown" ? { kind: args.kind } : {}),
     });
@@ -300,9 +329,10 @@ const HANDLERS: Record<string, Handler> = {
     };
   },
 
-  async recall_prompts(args: { query: string; recency?: string; status?: string; limit?: number }, runtime) {
+  async recall_prompts(args: { query: string; recency?: string; status?: string; limit?: number }, runtime, call) {
     const result = await runtime.host.recallPrompts({
       query: args.query,
+      ...(call.signal ? { signal: call.signal } : {}),
       ...(args.recency ? { recency: args.recency as never } : {}),
       ...(args.status ? { status: args.status as never } : {}),
       ...(args.limit ? { limit: args.limit } : {}),
@@ -358,7 +388,7 @@ const HANDLERS: Record<string, Handler> = {
         const motif = args.motif_id ? runtime.motifs.get(args.motif_id) : undefined;
         if (!motif) throw new Error(`no motif "${args.motif_id ?? "(missing motif_id)"}"`);
 
-        const take = runtime.book.active();
+        const take = requireOpen(runtime.book.active());
         if (take.lines().some((line) => line.motifId === motif.id)) {
           return { attached: false, reason: "already on this take" };
         }
@@ -379,7 +409,7 @@ const HANDLERS: Record<string, Handler> = {
       }
 
       case "detach": {
-        const take = runtime.book.active();
+        const take = requireOpen(runtime.book.active());
         const line = take.lines().find((candidate) => candidate.motifId === args.motif_id);
         if (!line) return { detached: false, reason: "not on this take" };
         take.removeLine(line.id);
@@ -457,7 +487,7 @@ const HANDLERS: Record<string, Handler> = {
     }
   },
 
-  async submit_prompt(args: { take_id?: string; target?: string; keep_open?: boolean }, runtime) {
+  async submit_prompt(args: { take_id?: string; target?: string; keep_open?: boolean }, runtime, call) {
     const take = requireOpen(resolveTake(runtime, args.take_id));
 
     if (!isReady(take, runtime.bundle.policy)) {
@@ -475,6 +505,7 @@ const HANDLERS: Record<string, Handler> = {
 
     const artifact = buildArtifact(take, {
       config: runtime.bundle.render,
+      ...(runtime.renderProfile ? { profile: runtime.renderProfile } : {}),
       lexicon: runtime.lexicon,
       utteranceCount: runtime.ledger.size,
       now: runtime.now(),
@@ -486,6 +517,7 @@ const HANDLERS: Record<string, Handler> = {
       result = await runtime.host.submitPrompt(artifact, {
         ...(args.target ? { target: args.target } : {}),
         ...(args.keep_open ? { keepOpen: args.keep_open } : {}),
+        ...(call.signal ? { signal: call.signal } : {}),
       });
     } catch (error) {
       // The registry turns this into a tool error, so the status has to be put back here or the
@@ -494,10 +526,20 @@ const HANDLERS: Record<string, Handler> = {
       throw error;
     }
 
+    let storeWarning: string | undefined;
+
     if (result.submitted) {
       take.status = args.keep_open ? "drafting" : "submitted";
-      const stored: PromptArtifact = { ...artifact, status: take.status };
-      await runtime.store.saveArtifact(stored);
+      const stored: PromptArtifact = { ...artifact, status: take.status, submittedAt: runtime.now() };
+
+      // The destination already has the prompt. Reporting a failed save as a failed submission
+      // would invite a retry that sends it twice, so the send is reported as what it is.
+      try {
+        await runtime.store.saveArtifact(stored);
+      } catch (error) {
+        storeWarning = `it was sent, but saving a copy failed: ${(error as Error).message}`;
+      }
+
       runtime.onSubmitted?.(stored);
       if (!args.keep_open) {
         // Without this the submitted take stays active and the next line spoken lands inside a
@@ -515,6 +557,7 @@ const HANDLERS: Record<string, Handler> = {
       destination: result.destination,
       url: result.url,
       ...(result.message ? { message: result.message } : {}),
+      ...(storeWarning ? { warning: storeWarning } : {}),
     };
   },
 };

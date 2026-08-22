@@ -262,3 +262,22 @@ describe("endpoint construction", () => {
     assert.deepEqual(built.searchParams.getAll("model"), ["new"]);
   });
 });
+
+describe("connection teardown", () => {
+  it("fails immediately when the signal is already aborted", async () => {
+    const provider = new OpenAIRealtimeProvider({
+      credentials: apiKeyCredentials("sk-test-key"),
+      createWebSocket: (url, protocols) => new FakeWebSocket(url, protocols),
+    });
+
+    await assert.rejects(
+      provider.connect({
+        instructions: "",
+        tools: [],
+        session: bundle.session,
+        signal: AbortSignal.abort(),
+      }),
+      /aborted/,
+    );
+  });
+});

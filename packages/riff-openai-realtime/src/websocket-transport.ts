@@ -77,19 +77,32 @@ export async function connectWebSocket(options: WebSocketTransportOptions): Prom
     for (const listener of errorListeners) listener(new Error("the realtime socket failed"));
   });
 
-  await new Promise<void>((resolve, reject) => {
-    if (socket.readyState === OPEN) return resolve();
-    const onAbort = () => reject(new Error("connection aborted"));
-    options.signal?.addEventListener("abort", onAbort, { once: true });
-    socket.addEventListener("open", () => {
-      options.signal?.removeEventListener("abort", onAbort);
-      resolve();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      // A signal aborted before this point never fires a listener, so it has to be checked first.
+      if (options.signal?.aborted) return reject(new Error("connection aborted"));
+      if (socket.readyState === OPEN) return resolve();
+
+      const onAbort = () => reject(new Error("connection aborted"));
+      options.signal?.addEventListener("abort", onAbort, { once: true });
+      socket.addEventListener("open", () => {
+        options.signal?.removeEventListener("abort", onAbort);
+        resolve();
+      });
+      socket.addEventListener("error", () => reject(new Error("could not open the realtime socket")));
+      socket.addEventListener("close", (event: { reason?: string }) =>
+        reject(new Error(`the realtime socket closed before it opened${event?.reason ? `: ${event.reason}` : ""}`)),
+      );
     });
-    socket.addEventListener("error", () => reject(new Error("could not open the realtime socket")));
-    socket.addEventListener("close", (event: { reason?: string }) =>
-      reject(new Error(`the realtime socket closed before it opened${event?.reason ? `: ${event.reason}` : ""}`)),
-    );
-  });
+  } catch (error) {
+    // Otherwise a failed connect leaves a socket opening in the background.
+    try {
+      socket.close(1000, "connect failed");
+    } catch {
+      // Already closing.
+    }
+    throw error;
+  }
 
   return {
     kind: "websocket",

@@ -47,6 +47,16 @@ describe("RiffSession", () => {
     await settle();
   });
 
+  async function draftOneLine(text: string): Promise<string> {
+    provider.say(text);
+    await settle();
+    provider.callTool("draft_update", {
+      operations: [{ op: "upsert_line", section: "intent", text }],
+    });
+    await settle();
+    return session.book.activeId!;
+  }
+
   it("hands the model the composed instructions, the tools, and the vocabulary", () => {
     assert.ok(provider.request);
     assert.match(provider.request.instructions, /You are Riff/);
@@ -464,6 +474,112 @@ describe("RiffSession", () => {
     assert.equal(artifact.provenance.model, "fake-realtime");
     assert.equal(artifact.provenance.sessionId, "sess_fake");
     assert.ok((artifact.provenance.durationMs ?? -1) >= 0);
+  });
+
+  it("will not resurrect a submitted take by parking or switching to it", async () => {
+    const takeId = await draftOneLine("the export button does nothing past a thousand rows");
+    provider.callTool("submit_prompt", {});
+    await settle();
+
+    const parked = provider.callTool("takes", { action: "park", take_id: takeId });
+    await settle();
+    assert.match(provider.resultFor(parked).error, /cannot be parked/);
+
+    const switched = provider.callTool("takes", { action: "switch", take_id: takeId });
+    await settle();
+    assert.match(provider.resultFor(switched).error, /cannot be reopened/);
+    assert.equal(session.book.get(takeId)?.status, "submitted");
+  });
+
+  it("will not attach a motif to a take that was already submitted", async () => {
+    provider.say("and never touch the generated files");
+    await settle();
+    const saved = provider.callTool("motifs", { action: "save", text: "never touch the generated files" });
+    await settle();
+    const motifId = provider.resultFor(saved).motif_id;
+
+    const takeId = await draftOneLine("the export button does nothing past a thousand rows");
+    provider.callTool("submit_prompt", {});
+    await settle();
+    assert.equal(session.book.activeId, null);
+
+    // Nothing is active, so this would land on the submitted take if the guard were missing.
+    const attached = provider.callTool("motifs", { action: "attach", motif_id: motifId });
+    await settle();
+
+    // A fresh take is started instead, and the submitted one is untouched.
+    assert.notEqual(session.book.activeId, takeId);
+    assert.equal(session.book.get(takeId)?.lines().length, 1);
+    assert.equal(provider.resultFor(attached).attached, true);
+  });
+
+  it("rejects a line id that does not name an existing line", async () => {
+    provider.say("the export button does nothing past a thousand rows");
+    await settle();
+
+    const callId = provider.callTool("draft_update", {
+      operations: [
+        {
+          op: "upsert_line",
+          line_id: "t1-l1",
+          section: "intent",
+          text: "the export button does nothing past a thousand rows",
+        },
+      ],
+    });
+    await settle();
+
+    assert.match(provider.resultFor(callId).rejected[0].reason, /omit line_id to add a new one/);
+  });
+
+  it("cancels the response when they start talking, not just when asked to", async () => {
+    provider.emit({ type: "response.started", responseId: "r1" });
+    provider.emit({ type: "response.audio", responseId: "r1", audio: new Uint8Array([1]) });
+    assert.equal(session.state, "speaking");
+
+    provider.emit({ type: "speech.started" });
+
+    assert.ok(provider.calls.some((call) => call.kind === "cancel"), "buffered audio must be dropped");
+    assert.ok(events.some((event) => event.type === "interrupted"));
+    assert.equal(session.state, "listening");
+  });
+
+  it("does not report a send as failed because saving a copy failed", async () => {
+    store.saveArtifact = async () => {
+      throw new Error("disk is full");
+    };
+
+    await draftOneLine("the export button does nothing past a thousand rows");
+    const callId = provider.callTool("submit_prompt", {});
+    await settle();
+
+    const result = provider.resultFor(callId);
+    assert.equal(result.submitted, true, "the destination already has it; a retry would send twice");
+    assert.match(result.warning, /saving a copy failed/);
+    assert.equal(host.submitted.length, 1);
+  });
+
+  it("submits with the render profile the session was configured with", async () => {
+    const styled = new FakeProvider();
+    const session = new RiffSession({ bundle, provider: styled, host, store, renderProfile: "structured" });
+    await session.start();
+    await settle();
+
+    styled.say("the uploader keeps dying on big files");
+    styled.say("it only happens over about fifty megs");
+    await settle();
+    styled.callTool("draft_update", {
+      operations: [
+        { op: "upsert_line", section: "intent", text: "the uploader keeps dying on big files" },
+        { op: "upsert_line", section: "detail", text: "it only happens over about fifty megs" },
+      ],
+    });
+    await settle();
+    styled.callTool("submit_prompt", {});
+    await settle();
+
+    const artifact = host.submitted.at(-1)!;
+    assert.match(artifact.rendered, /## Details/, "submitted text must match the configured profile");
   });
 
   it("refuses to submit a take with nothing in it", async () => {

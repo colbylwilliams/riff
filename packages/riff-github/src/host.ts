@@ -127,19 +127,22 @@ export class GitHubHost implements RiffHost {
 
     const needle = request.query.toLowerCase();
     const artifacts = await store.listArtifacts({ limit: 100 });
+    const notBefore = recallCutoff(request.recency);
 
     const prompts = artifacts
       .filter((artifact) => {
         if (request.status && request.status !== "any" && artifact.status !== request.status) return false;
+        // `updatedAt` tracks edits, so a draft touched last week is not a prompt sent last week.
+        if (notBefore && (artifact.submittedAt ?? "") < notBefore) return false;
         const haystack = `${artifact.title.text} ${artifact.rendered}`.toLowerCase();
         return needle.length === 0 || haystack.includes(needle);
       })
-      .slice(0, request.limit ?? 5)
+      .slice(0, request.recency === "latest" ? 1 : (request.limit ?? 5))
       .map((artifact) => ({
         promptId: artifact.id,
         title: artifact.title.text,
         excerpt: artifact.rendered.slice(0, 400),
-        ...(artifact.updatedAt ? { submittedAt: artifact.updatedAt } : {}),
+        ...(artifact.submittedAt ? { submittedAt: artifact.submittedAt } : {}),
         ...(artifact.status ? { status: artifact.status } : {}),
       }));
 
@@ -367,6 +370,14 @@ function meaningfulWords(phrase: string): string {
     .filter((word) => word.length > 2 && !REFERRING_WORDS.has(word))
     .slice(0, 6)
     .join(" ");
+}
+
+/** ISO cutoff for a recall window. `latest` bounds the count, not the age. */
+function recallCutoff(recency: RecallPromptsRequest["recency"]): string | null {
+  const windows: Record<string, number> = { today: 1, this_week: 7, this_month: 31 };
+  const days = windows[recency ?? "any"];
+  if (!days) return null;
+  return new Date(Date.now() - days * 86_400_000).toISOString();
 }
 
 function sinceFor(recency: ResolveReferenceRequest["recency"]): string | null {

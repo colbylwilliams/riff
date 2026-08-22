@@ -35,6 +35,11 @@ export interface DraftOperationOutcome {
 
 const ORDER_STEP = 1000;
 
+/** A take that has been sent or thrown away. Nothing may reopen or alter it. */
+export function isTerminal(take: Take): boolean {
+  return take.status === "submitted" || take.status === "discarded";
+}
+
 /** One draft prompt. A session can hold several, so a change of subject does not destroy the last one. */
 export class Take {
   readonly id: string;
@@ -288,7 +293,17 @@ function applyUpsertLine(take: Take, operation: DraftOperation, ctx: ApplyContex
   }
 
   const existing = operation.line_id ? take.line(operation.line_id) : undefined;
-  const id = existing?.id ?? operation.line_id ?? take.nextLineId();
+  if (operation.line_id && !existing) {
+    // Accepting an unknown id would create a line outside the generated sequence, and the next
+    // ordinary insert would reuse that id and silently overwrite this line.
+    return {
+      op: "upsert_line",
+      lineId: operation.line_id,
+      status: "rejected",
+      reason: `no line ${operation.line_id} in this take; omit line_id to add a new one`,
+    };
+  }
+  const id = existing?.id ?? take.nextLineId();
   const order =
     existing && operation.after_line_id === undefined
       ? existing.order
@@ -406,6 +421,8 @@ export class DraftBook {
   switchTo(id: string): Take | undefined {
     const take = this.#takes.get(id);
     if (!take) return undefined;
+    // Switching to a finished take would make it the target of the next thing spoken.
+    if (isTerminal(take)) throw new Error(`take "${id}" was already ${take.status}; it cannot be reopened`);
     const previous = this.#activeId ? this.#takes.get(this.#activeId) : undefined;
     if (previous && previous.id !== id && previous.status === "drafting") previous.status = "parked";
     take.status = take.status === "parked" ? "drafting" : take.status;
@@ -416,6 +433,9 @@ export class DraftBook {
   park(id: string): Take | undefined {
     const take = this.#takes.get(id);
     if (!take) return undefined;
+    // Parking a finished take would move it out of a terminal state, and switching back would then
+    // promote it to drafting — which is how every guard downstream gets bypassed.
+    if (isTerminal(take)) throw new Error(`take "${id}" was already ${take.status}; it cannot be parked`);
     take.status = "parked";
     if (this.#activeId === id) {
       const next = this.takes().find((candidate) => candidate.id !== id && candidate.status === "drafting");
@@ -432,6 +452,7 @@ export class DraftBook {
   discard(id: string): boolean {
     const take = this.#takes.get(id);
     if (!take) return false;
+    if (take.status === "submitted") throw new Error(`take "${id}" was already submitted`);
     take.status = "discarded";
     if (this.#activeId === id) this.#activeId = null;
     return true;

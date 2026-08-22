@@ -153,25 +153,24 @@ final class ConnectionBox: RealtimeConnection, @unchecked Sendable {
     }
 
     func awaitHandshake(timeout: Duration) async throws {
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            group.addTask { [self] in
-                try await withCheckedThrowingContinuation { continuation in
-                    lock.lock()
-                    if handshakeSettled {
-                        lock.unlock()
-                        continuation.resume()
-                        return
-                    }
-                    handshake = continuation
+        // A task group would wait for the continuation child even after the timer fired, so a
+        // session.created that never arrives would hang connect() instead of timing it out.
+        let milliseconds = Int(timeout.components.seconds * 1000 + timeout.components.attoseconds / 1_000_000_000_000_000)
+
+        try await withDeadline(
+            milliseconds: milliseconds,
+            onTimeout: { RiffError.provider("timed out waiting for session.created") }
+        ) { [self] in
+            try await withCheckedThrowingContinuation { continuation in
+                lock.lock()
+                if handshakeSettled {
                     lock.unlock()
+                    continuation.resume()
+                    return
                 }
+                handshake = continuation
+                lock.unlock()
             }
-            group.addTask {
-                try await Task.sleep(for: timeout)
-                throw RiffError.provider("timed out waiting for session.created")
-            }
-            try await group.next()
-            group.cancelAll()
         }
     }
 

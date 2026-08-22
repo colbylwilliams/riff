@@ -613,6 +613,82 @@ struct SessionTests {
         #expect(artifact.provenance.sessionId == "sess_fake")
     }
 
+    @Test("will not resurrect a submitted take by parking or switching to it")
+    func terminalTakeCannotBeReopened() async throws {
+        let (session, provider, _, _) = try await makeSession()
+        defer { withExtendedLifetime(session) {} }
+
+        provider.connection.say("the export button does nothing past a thousand rows")
+        await settle()
+        let drafted = provider.connection.callTool("draft_update", .object([
+            "operations": .array([
+                .object([
+                    "op": .string("upsert_line"),
+                    "section": .string("intent"),
+                    "text": .string("the export button does nothing past a thousand rows"),
+                ]),
+            ]),
+        ]))
+        _ = try await provider.connection.result(for: drafted)
+        let takeId = try #require(session.book.activeId)
+
+        let submitted = provider.connection.callTool("submit_prompt", .object([:]))
+        _ = try await provider.connection.result(for: submitted)
+
+        let parked = provider.connection.callTool("takes", .object([
+            "action": .string("park"), "take_id": .string(takeId),
+        ]))
+        #expect(try await provider.connection.result(for: parked)["error"]?.stringValue?
+            .contains("cannot be parked") == true)
+
+        let switched = provider.connection.callTool("takes", .object([
+            "action": .string("switch"), "take_id": .string(takeId),
+        ]))
+        #expect(try await provider.connection.result(for: switched)["error"]?.stringValue?
+            .contains("cannot be reopened") == true)
+        #expect(session.book.take(takeId)?.status == .submitted)
+    }
+
+    @Test("rejects a line id that does not name an existing line")
+    func rejectsUnknownLineId() async throws {
+        let (session, provider, _, _) = try await makeSession()
+        defer { withExtendedLifetime(session) {} }
+
+        provider.connection.say("the export button does nothing past a thousand rows")
+        await settle()
+
+        let callId = provider.connection.callTool("draft_update", .object([
+            "operations": .array([
+                .object([
+                    "op": .string("upsert_line"),
+                    "line_id": .string("t1-l1"),
+                    "section": .string("intent"),
+                    "text": .string("the export button does nothing past a thousand rows"),
+                ]),
+            ]),
+        ]))
+
+        let rejected = try await provider.connection.result(for: callId)["rejected"]?.arrayValue?.first
+        #expect(rejected?["reason"]?.stringValue?.contains("omit line_id to add a new one") == true)
+    }
+
+    @Test("cancels the response when they start talking, not just when asked to")
+    func automaticBargeInCancels() async throws {
+        let (session, provider, _, _) = try await makeSession()
+        defer { withExtendedLifetime(session) {} }
+
+        provider.connection.emit(.responseStarted(responseId: "r1"))
+        provider.connection.emit(.responseAudio(responseId: "r1", audio: Data([1])))
+        await settle()
+        #expect(session.state == .speaking)
+
+        provider.connection.emit(.speechStarted)
+        let cancelled = await provider.connection.waitForCall { $0 == .cancel }
+
+        #expect(cancelled, "buffered audio must be dropped")
+        #expect(session.state == .listening)
+    }
+
     @Test("refuses to submit a take with nothing in it")
     func refusesEmptySubmit() async throws {
         let (session, provider, host, _) = try await makeSession()

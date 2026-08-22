@@ -89,24 +89,29 @@ export function createGroundingChecker(config: GroundingConfig, lexicon: Lexicon
       // Multiset containment upper-bounds the ordered match, so this prunes without false negatives.
       if (containment(candCounts, span.tokens, totalSubstantive) < threshold) continue;
 
-      const spanTokens = span.tokens.length > MAX_SPAN_TOKENS ? span.tokens.slice(-MAX_SPAN_TOKENS) : span.tokens;
-      const offset = span.tokens.length - spanTokens.length;
-      const pairs = longestCommonSubsequence(candTokens, spanTokens);
+      // Aligning only a suffix of a long span would reject a line quoted from the start of a long
+      // turn: containment passes against the whole span, then LCS scores near zero against the
+      // tail. Overlapping windows keep the cost bounded without dropping any of the source.
+      for (const offset of windowOffsets(span.tokens.length, candTokens.length)) {
+        const spanTokens = span.tokens.slice(offset, offset + MAX_SPAN_TOKENS);
+        const pairs = longestCommonSubsequence(candTokens, spanTokens);
 
-      const matchedCandIndexes = new Set<number>();
-      const matchedOwners = new Set<string>();
-      let matchedSubstantive = 0;
-      for (const [candIndex, spanIndex] of pairs) {
-        matchedCandIndexes.add(candIndex);
-        const token = candTokens[candIndex];
-        if (token !== undefined && !ignorable(token)) matchedSubstantive += 1;
-        const owner = span.owners[spanIndex + offset];
-        if (owner !== undefined) matchedOwners.add(owner);
+        const matchedCandIndexes = new Set<number>();
+        const matchedOwners = new Set<string>();
+        let matchedSubstantive = 0;
+        for (const [candIndex, spanIndex] of pairs) {
+          matchedCandIndexes.add(candIndex);
+          const token = candTokens[candIndex];
+          if (token !== undefined && !ignorable(token)) matchedSubstantive += 1;
+          const owner = span.owners[spanIndex + offset];
+          if (owner !== undefined) matchedOwners.add(owner);
+        }
+
+        const ratio = matchedSubstantive / totalSubstantive;
+        if (!best || ratio > best.ratio) best = { ratio, span, matchedCandIndexes, matchedOwners };
+        if (ratio === 1) break;
       }
-
-      const ratio = matchedSubstantive / totalSubstantive;
-      if (!best || ratio > best.ratio) best = { ratio, span, matchedCandIndexes, matchedOwners };
-      if (ratio === 1) break;
+      if (best?.ratio === 1) break;
     }
 
     if (!best) {
@@ -153,6 +158,21 @@ export function createGroundingChecker(config: GroundingConfig, lexicon: Lexicon
     checkTitle: (candidate, spans) =>
       evaluate(candidate, spans, config.titleThreshold ?? config.threshold, true),
   };
+}
+
+/**
+ * Start offsets of overlapping windows covering a span. Windows overlap by the candidate's length so
+ * a line straddling a window boundary is still seen whole by at least one of them.
+ */
+function windowOffsets(spanLength: number, candidateLength: number): number[] {
+  if (spanLength <= MAX_SPAN_TOKENS) return [0];
+  const stride = Math.max(1, MAX_SPAN_TOKENS - candidateLength);
+  const offsets: number[] = [];
+  for (let start = 0; start < spanLength; start += stride) {
+    offsets.push(start);
+    if (start + MAX_SPAN_TOKENS >= spanLength) break;
+  }
+  return offsets;
 }
 
 function countTokens(tokens: readonly string[]): Map<string, number> {

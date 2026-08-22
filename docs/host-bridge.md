@@ -72,7 +72,11 @@ prompt as though it were confirmed.
 ## `recallPrompts`
 
 Earlier prompts, for when someone refers back to a previous request, or when the agent needs to know
-how they usually phrase this kind of thing. Their old wording is a legitimate source of their words.
+how they usually phrase this kind of thing.
+
+What you return is background for the agent, not material for the prompt. Only the current session's
+ledger is an authorized source, so recalled text cannot be quoted into a new prompt — see
+[grounding.md](grounding.md) and issue #2.
 
 Backing this with the same store used for `saveArtifact` is usually enough.
 

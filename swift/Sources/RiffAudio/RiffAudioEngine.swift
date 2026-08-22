@@ -115,7 +115,17 @@ public final class RiffAudioEngine: @unchecked Sendable {
         }
 
         engine.prepare()
-        try engine.start()
+        do {
+            try engine.start()
+        } catch {
+            // Leaving the tap and observers installed means a retry adds a second tap to the same
+            // bus, which raises inside AVAudioEngine.
+            engine.inputNode.removeTap(onBus: 0)
+            removeObservers()
+            state.reset()
+            throw error
+        }
+
         player.play()
         state.isRunning = true
     }
