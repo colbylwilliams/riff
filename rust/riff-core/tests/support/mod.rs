@@ -8,10 +8,10 @@ use std::task::{Context, Poll, Wake, Waker};
 
 use riff_core::{
     AudioFormat, BoxFuture, Clock, ConnectRequest, ContextItem, HostEnvironment, HostResult, Json,
-    LexiconTerm, LookupTermRequest, PriorPrompt, PromptArtifact, ProviderCapabilities,
+    LexiconTerm, LookupTermRequest, Motif, PriorPrompt, PromptArtifact, ProviderCapabilities,
     ProviderEvent, ProviderFault, RealtimeConnection, RealtimeProvider, RecallPromptsRequest,
-    ResolveReferenceRequest, RiffHost, SubmitOptions, SubmitResult, SystemClock, TermMatch,
-    ToolCallRequest,
+    ResolveReferenceRequest, RiffHost, RiffStore, SubmitOptions, SubmitResult, SystemClock,
+    TermMatch, ToolCallRequest,
 };
 
 /// Runs a future to completion on the calling thread.
@@ -449,5 +449,40 @@ impl RiffHost for StalledHost {
         _options: SubmitOptions,
     ) -> BoxFuture<'_, HostResult<SubmitResult>> {
         Box::pin(std::future::pending())
+    }
+}
+
+/// A store whose save never returns, for landing a deadline after the host has already taken the
+/// prompt.
+#[derive(Default)]
+pub struct StallingStore;
+
+impl RiffStore for StallingStore {
+    fn load_lexicon(&self) -> BoxFuture<'_, HostResult<Vec<LexiconTerm>>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    fn save_term(&self, _term: LexiconTerm) -> BoxFuture<'_, HostResult<()>> {
+        Box::pin(std::future::pending())
+    }
+
+    fn list_motifs(&self) -> BoxFuture<'_, HostResult<Vec<Motif>>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    fn save_motif(&self, _motif: Motif) -> BoxFuture<'_, HostResult<()>> {
+        Box::pin(std::future::pending())
+    }
+
+    fn retire_motif(&self, _id: String, _at: String) -> BoxFuture<'_, HostResult<()>> {
+        Box::pin(std::future::pending())
+    }
+
+    fn save_artifact(&self, _artifact: PromptArtifact) -> BoxFuture<'_, HostResult<()>> {
+        Box::pin(std::future::pending())
+    }
+
+    fn list_artifacts(&self, _limit: usize) -> BoxFuture<'_, HostResult<Vec<PromptArtifact>>> {
+        Box::pin(async { Ok(Vec::new()) })
     }
 }

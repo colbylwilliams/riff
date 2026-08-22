@@ -12,7 +12,9 @@ use riff_core::{
     AgentBundle, ContextItem, Destination, HostEnvironment, Json, MemoryStore, RiffEvent,
     RiffSession, RiffSessionOptions, SessionState, SystemClock, TakeStatus, json_object,
 };
-use support::{Call, FakeProvider, InstantClock, RecordingHost, StalledHost, block_on};
+use support::{
+    Call, FakeProvider, InstantClock, RecordingHost, StalledHost, StallingStore, block_on,
+};
 
 struct Harness {
     session: RiffSession,
@@ -918,4 +920,65 @@ fn warns_before_the_provider_cuts_the_session_off() {
     harness.say("the login page is broken");
     assert_eq!(harness.session.runtime.ledger.len(), 1);
     assert_eq!(*warnings.lock().unwrap(), [300, 60]);
+}
+
+#[test]
+fn a_deadline_cannot_erase_the_record_that_a_prompt_was_already_sent() {
+    // The host takes the prompt, then the save hangs and the deadline lands on it. Everything that
+    // records the send has to have happened already: the destination has the prompt, and Riff
+    // forgetting that is how the next thing spoken lands inside a prompt that has gone out.
+    let provider = Arc::new(FakeProvider::default());
+    let host = Arc::new(RecordingHost::default());
+    let bundle = Arc::new(AgentBundle::bundled().expect("the vendored bundle must load"));
+
+    let mut options = RiffSessionOptions::new(bundle, provider.clone());
+    options.host = host.clone();
+    options.store = Arc::new(StallingStore);
+    options.clock = Arc::new(InstantClock::new());
+
+    let mut session = RiffSession::new(options);
+    block_on(session.start()).expect("connects");
+
+    let submitted = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let sink = submitted.clone();
+    session.on(Box::new(move |event| {
+        if let RiffEvent::Submitted(artifact) = event {
+            sink.lock().unwrap().push(artifact.take_id.clone());
+        }
+    }));
+
+    provider.connection().say("fix the flaky test");
+    block_on(session.step());
+    provider
+        .connection()
+        .call_tool("draft_update", upsert("intent", "fix the flaky test"));
+    block_on(session.step());
+
+    let id = provider
+        .connection()
+        .call_tool("submit_prompt", Json::object());
+    block_on(session.step());
+
+    // The model is told the tool did not answer, so it does not report a send it cannot confirm.
+    let result = provider.connection().result_for(&id);
+    assert!(
+        result
+            .get_str("error")
+            .is_some_and(|error| error.contains("did not answer")),
+        "got {result:?}"
+    );
+
+    assert_eq!(host.submitted().len(), 1, "the host took it exactly once");
+    assert_eq!(
+        *submitted.lock().unwrap(),
+        ["t1"],
+        "and the session was told"
+    );
+
+    let take = session.takes().iter().find(|take| take.id == "t1").unwrap();
+    assert_eq!(take.status, TakeStatus::Submitted);
+    assert!(
+        session.runtime.book.active_id().is_none(),
+        "a sent take must not stay active"
+    );
 }

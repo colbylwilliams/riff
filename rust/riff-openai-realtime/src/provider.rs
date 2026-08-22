@@ -189,12 +189,15 @@ async fn await_handshake(
     timeout_ms: u64,
 ) -> Result<Handshake, ProviderFault> {
     let mut pending = VecDeque::new();
+    // Created once, and re-polled across iterations. A fresh delay per message would bound only the
+    // gap between messages, so an endpoint that keeps sending keepalives would hold `connect`
+    // pending forever with no error path.
+    let mut deadline = (timeout_ms > 0).then(|| clock.sleep(timeout_ms));
 
     loop {
-        let message = if timeout_ms == 0 {
-            transport.next_message().await
-        } else {
-            match race(transport.next_message(), clock.sleep(timeout_ms)).await {
+        let message = match deadline.as_mut() {
+            None => transport.next_message().await,
+            Some(deadline) => match race(transport.next_message(), deadline).await {
                 Either::Left(message) => message,
                 Either::Right(()) => {
                     return Err(ProviderFault::retryable(
@@ -202,7 +205,7 @@ async fn await_handshake(
                         format!("timed out after {timeout_ms}ms waiting for session.created"),
                     ));
                 }
-            }
+            },
         };
 
         match message {

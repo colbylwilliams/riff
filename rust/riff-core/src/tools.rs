@@ -92,6 +92,8 @@ pub struct ToolRuntime {
     host: Arc<dyn RiffHost>,
     store: Arc<dyn RiffStore>,
     clock: Arc<dyn Clock>,
+    /// Effects recorded so far by the running handler. See [`ToolRuntime::record`].
+    effects: Vec<ToolEffect>,
 }
 
 impl ToolRuntime {
@@ -123,7 +125,18 @@ impl ToolRuntime {
             host,
             store,
             clock,
+            effects: Vec::new(),
         }
+    }
+
+    /// Records something the session has to act on.
+    ///
+    /// Effects are recorded where the state actually changes rather than returned when the handler
+    /// finishes, because a handler is dropped when its deadline expires. An effect for something
+    /// that has already happened — a prompt the destination has taken, a term the lexicon now
+    /// holds — has to survive that, or Riff loses its own record of it.
+    fn record(&mut self, effect: ToolEffect) {
+        self.effects.push(effect);
     }
 
     /// The fidelity gate this runtime checks lines against.
@@ -207,24 +220,35 @@ impl ToolRuntime {
         )
         .await;
 
+        // Drained whatever the outcome: a handler abandoned at its deadline may already have
+        // changed state the session has to hear about.
+        let effects = std::mem::take(&mut self.effects);
+        let duration_ms = elapsed(self);
+
         match outcome {
-            Some(Ok((result, effects))) => ToolOutcome {
+            Some(Ok(result)) => ToolOutcome {
                 ok: true,
                 result,
-                duration_ms: elapsed(self),
+                duration_ms,
                 effects,
             },
-            Some(Err(error)) => ToolOutcome::error(error.to_string(), elapsed(self)),
-            None => ToolOutcome::error(
-                format!(
-                    "{name} did not answer within {timeout_ms}ms; tell them it is not responding"
-                ),
-                elapsed(self),
-            ),
+            Some(Err(error)) => ToolOutcome {
+                effects,
+                ..ToolOutcome::error(error.to_string(), duration_ms)
+            },
+            None => ToolOutcome {
+                effects,
+                ..ToolOutcome::error(
+                    format!(
+                        "{name} did not answer within {timeout_ms}ms; tell them it is not responding"
+                    ),
+                    duration_ms,
+                )
+            },
         }
     }
 
-    async fn run(&mut self, name: &str, args: &Json) -> Result<(Json, Vec<ToolEffect>)> {
+    async fn run(&mut self, name: &str, args: &Json) -> Result<Json> {
         match name {
             "draft_update" => self.draft_update(args),
             "read_draft" => self.read_draft(args),
@@ -243,7 +267,7 @@ impl ToolRuntime {
 
     // MARK: - Draft
 
-    fn draft_update(&mut self, args: &Json) -> Result<(Json, Vec<ToolEffect>)> {
+    fn draft_update(&mut self, args: &Json) -> Result<Json> {
         let take_id = self.resolve_take_id(args.get_str("take_id"))?;
         self.require_open(&take_id)?;
 
@@ -284,24 +308,19 @@ impl ToolRuntime {
         let fidelity = self.artifact_for(take)?.provenance.fidelity;
         let view = self.draft_view(take, false)?;
 
-        let effects = if accepted_any {
-            vec![ToolEffect::DraftChanged(take_id)]
-        } else {
-            Vec::new()
-        };
+        if accepted_any {
+            self.record(ToolEffect::DraftChanged(take_id));
+        }
 
-        Ok((
-            Json::Object(json_object! {
-                "accepted" => Json::Array(result.accepted.iter().map(|outcome| outcome.to_json()).collect()),
-                "rejected" => Json::Array(result.rejected.iter().map(|outcome| outcome.to_json()).collect()),
-                "fidelity" => fidelity,
-                "draft" => view,
-            }),
-            effects,
-        ))
+        Ok(Json::Object(json_object! {
+            "accepted" => Json::Array(result.accepted.iter().map(|outcome| outcome.to_json()).collect()),
+            "rejected" => Json::Array(result.rejected.iter().map(|outcome| outcome.to_json()).collect()),
+            "fidelity" => fidelity,
+            "draft" => view,
+        }))
     }
 
-    fn read_draft(&mut self, args: &Json) -> Result<(Json, Vec<ToolEffect>)> {
+    fn read_draft(&mut self, args: &Json) -> Result<Json> {
         let take_id = self.resolve_take_id(args.get_str("take_id"))?;
         let include_rendered = args.get("include_rendered").and_then(Json::as_bool) == Some(true);
 
@@ -316,7 +335,7 @@ impl ToolRuntime {
         let mut object = view.as_object().cloned().unwrap_or_default();
         object.insert("gist", Json::from(gist));
         object.insert("fidelity", Json::from(fidelity));
-        Ok((Json::Object(object), Vec::new()))
+        Ok(Json::Object(object))
     }
 
     /// Compact view of the draft returned after every mutation, so the agent always knows line ids.
@@ -378,7 +397,7 @@ impl ToolRuntime {
 
     // MARK: - Host-backed tools
 
-    async fn resolve_reference(&mut self, args: &Json) -> Result<(Json, Vec<ToolEffect>)> {
+    async fn resolve_reference(&mut self, args: &Json) -> Result<Json> {
         let phrase = args.get_str("phrase").unwrap_or_default().to_owned();
         let candidates = self
             .host
@@ -431,10 +450,10 @@ impl ToolRuntime {
                 Json::from("nothing matched; ask them which one they mean rather than guessing"),
             );
         }
-        Ok((Json::Object(object), Vec::new()))
+        Ok(Json::Object(object))
     }
 
-    async fn lookup_term(&mut self, args: &Json) -> Result<(Json, Vec<ToolEffect>)> {
+    async fn lookup_term(&mut self, args: &Json) -> Result<Json> {
         let heard = args.get_str("heard").unwrap_or_default().to_owned();
         let local = self.lexicon.lookup(&heard);
         let remote = self
@@ -485,10 +504,10 @@ impl ToolRuntime {
                 Json::from("unknown here; if it matters, ask them what it is"),
             );
         }
-        Ok((Json::Object(object), Vec::new()))
+        Ok(Json::Object(object))
     }
 
-    async fn record_term(&mut self, args: &Json) -> Result<(Json, Vec<ToolEffect>)> {
+    async fn record_term(&mut self, args: &Json) -> Result<Json> {
         let canonical = tidy_whitespace(args.get_str("canonical").unwrap_or_default());
         if canonical.is_empty() {
             return Err(RiffError::tool("record_term needs a canonical spelling"));
@@ -535,6 +554,9 @@ impl ToolRuntime {
 
         self.lexicon.add_with(term.clone(), confirmed);
         self.ledger.invalidate();
+        // Recorded before the save: the vocabulary has already changed, so the provider has to be
+        // told even if the save is what the deadline lands on.
+        self.record(ToolEffect::LexiconChanged);
         if term.scope.as_deref() != Some("session") {
             self.store.save_term(term).await?;
         }
@@ -561,10 +583,10 @@ impl ToolRuntime {
             );
         }
 
-        Ok((Json::Object(object), vec![ToolEffect::LexiconChanged]))
+        Ok(Json::Object(object))
     }
 
-    async fn recall_prompts(&mut self, args: &Json) -> Result<(Json, Vec<ToolEffect>)> {
+    async fn recall_prompts(&mut self, args: &Json) -> Result<Json> {
         let prompts = self
             .host
             .recall_prompts(RecallPromptsRequest {
@@ -575,9 +597,8 @@ impl ToolRuntime {
             })
             .await?;
 
-        Ok((
-            Json::Object(json_object! {
-                "prompts" => Json::Array(prompts.iter().map(|prompt| {
+        Ok(Json::Object(json_object! {
+            "prompts" => Json::Array(prompts.iter().map(|prompt| {
                     let mut entry = json_object! {
                         "promptId" => prompt.prompt_id.clone(),
                         "title" => prompt.title.clone(),
@@ -587,16 +608,14 @@ impl ToolRuntime {
                     entry.insert_some("status", prompt.status.clone().map(Json::from));
                     entry.insert_some("outcome", prompt.outcome.clone().map(Json::from));
                     entry.insert_some("url", prompt.url.clone().map(Json::from));
-                    Json::Object(entry)
-                }).collect()),
-            }),
-            Vec::new(),
-        ))
+                Json::Object(entry)
+            }).collect()),
+        }))
     }
 
     // MARK: - Motifs
 
-    async fn motifs(&mut self, args: &Json) -> Result<(Json, Vec<ToolEffect>)> {
+    async fn motifs(&mut self, args: &Json) -> Result<Json> {
         let action = args.get_str("action").unwrap_or_default();
         let motif_id = args.get_str("motif_id").map(str::to_owned);
 
@@ -608,20 +627,17 @@ impl ToolRuntime {
                     .filter(|motif| motif.retired_at.is_none())
                     .collect();
                 active.sort_by(|a, b| a.id.cmp(&b.id));
-                Ok((
-                    Json::Object(json_object! {
-                        "motifs" => Json::Array(active.iter().map(|motif| {
-                            let mut entry = json_object! {
-                                "motif_id" => motif.id.clone(),
-                                "text" => motif.text.clone(),
-                                "scope" => motif.scope.clone(),
-                            };
-                            entry.insert_some("applies_when", motif.applies_when.clone().map(Json::from));
-                            Json::Object(entry)
-                        }).collect()),
-                    }),
-                    Vec::new(),
-                ))
+                Ok(Json::Object(json_object! {
+                    "motifs" => Json::Array(active.iter().map(|motif| {
+                        let mut entry = json_object! {
+                            "motif_id" => motif.id.clone(),
+                            "text" => motif.text.clone(),
+                            "scope" => motif.scope.clone(),
+                        };
+                        entry.insert_some("applies_when", motif.applies_when.clone().map(Json::from));
+                        Json::Object(entry)
+                    }).collect()),
+                }))
             }
 
             "save" => {
@@ -635,22 +651,19 @@ impl ToolRuntime {
                 let spans = self.ledger.spans(&self.lexicon).to_vec();
                 let grounding = self.checker.check(&text, &spans, &self.lexicon);
                 if !grounding.ok {
-                    return Ok((
-                        Json::Object(json_object! {
-                            "saved" => false,
-                            "reason" => format!(
-                                "a motif has to be their wording; they did not say {}",
-                                grounding
-                                    .unmatched_tokens
-                                    .iter()
-                                    .take(6)
-                                    .map(|token| format!("\"{token}\""))
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            ),
-                        }),
-                        Vec::new(),
-                    ));
+                    return Ok(Json::Object(json_object! {
+                        "saved" => false,
+                        "reason" => format!(
+                            "a motif has to be their wording; they did not say {}",
+                            grounding
+                                .unmatched_tokens
+                                .iter()
+                                .take(6)
+                                .map(|token| format!("\"{token}\""))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                    }));
                 }
 
                 let motif = Motif {
@@ -666,9 +679,8 @@ impl ToolRuntime {
                 self.motifs.insert(motif.id.clone(), motif.clone());
                 let id = motif.id.clone();
                 self.store.save_motif(motif).await?;
-                Ok((
-                    Json::Object(json_object! { "saved" => true, "motif_id" => id }),
-                    Vec::new(),
+                Ok(Json::Object(
+                    json_object! { "saved" => true, "motif_id" => id },
                 ))
             }
 
@@ -702,13 +714,10 @@ impl ToolRuntime {
                         .iter()
                         .any(|line| line.motif_id.as_deref() == Some(motif.id.as_str()))
                     {
-                        return Ok((
-                            Json::Object(json_object! {
-                                "attached" => false,
-                                "reason" => "already on this take",
-                            }),
-                            Vec::new(),
-                        ));
+                        return Ok(Json::Object(json_object! {
+                            "attached" => false,
+                            "reason" => "already on this take",
+                        }));
                     }
 
                     let id = take.next_line_id();
@@ -729,14 +738,12 @@ impl ToolRuntime {
 
                 let take = self.book.get(&take_id).expect("take exists");
                 let view = self.draft_view(take, false)?;
-                Ok((
-                    Json::Object(json_object! {
-                        "attached" => true,
-                        "line_id" => line_id,
-                        "draft" => view,
-                    }),
-                    vec![ToolEffect::DraftChanged(take_id)],
-                ))
+                self.record(ToolEffect::DraftChanged(take_id));
+                Ok(Json::Object(json_object! {
+                    "attached" => true,
+                    "line_id" => line_id,
+                    "draft" => view,
+                }))
             }
 
             "detach" => {
@@ -752,19 +759,14 @@ impl ToolRuntime {
                     .into_iter()
                     .find(|line| line.motif_id.is_some() && line.motif_id == motif_id);
                 let Some(line) = line else {
-                    return Ok((
-                        Json::Object(
-                            json_object! { "detached" => false, "reason" => "not on this take" },
-                        ),
-                        Vec::new(),
+                    return Ok(Json::Object(
+                        json_object! { "detached" => false, "reason" => "not on this take" },
                     ));
                 };
                 take.remove_line(&line.id);
                 take.updated_at = now;
-                Ok((
-                    Json::Object(json_object! { "detached" => true }),
-                    vec![ToolEffect::DraftChanged(take_id)],
-                ))
+                self.record(ToolEffect::DraftChanged(take_id));
+                Ok(Json::Object(json_object! { "detached" => true }))
             }
 
             "retire" => {
@@ -776,7 +778,7 @@ impl ToolRuntime {
                     .ok_or_else(|| RiffError::tool(format!("no motif \"{id}\"")))?;
                 motif.retired_at = Some(at.clone());
                 self.store.retire_motif(id, at).await?;
-                Ok((Json::Object(json_object! { "retired" => true }), Vec::new()))
+                Ok(Json::Object(json_object! { "retired" => true }))
             }
 
             other => Err(RiffError::tool(format!(
@@ -787,7 +789,7 @@ impl ToolRuntime {
 
     // MARK: - Takes
 
-    fn takes(&mut self, args: &Json) -> Result<(Json, Vec<ToolEffect>)> {
+    fn takes(&mut self, args: &Json) -> Result<Json> {
         let action = args.get_str("action").unwrap_or_default();
         let take_id = args.get_str("take_id").map(str::to_owned);
         let now = self.clock.now();
@@ -803,14 +805,13 @@ impl ToolRuntime {
                 let label = args.get_str("label").map(str::to_owned);
                 let id = self.book.create(label, previous.as_deref(), &now)?;
                 let take = self.book.get(&id).expect("just created");
-                Ok((
-                    Json::Object(json_object! {
-                        "take_id" => id.clone(),
-                        "label" => take.label.clone().map_or(Json::Null, Json::from),
-                        "active" => true,
-                    }),
-                    vec![ToolEffect::TakeChanged(Some(id))],
-                ))
+                let result = Json::Object(json_object! {
+                    "take_id" => id.clone(),
+                    "label" => take.label.clone().map_or(Json::Null, Json::from),
+                    "active" => true,
+                });
+                self.record(ToolEffect::TakeChanged(Some(id)));
+                Ok(result)
             }
 
             "switch" => {
@@ -820,10 +821,10 @@ impl ToolRuntime {
                 }
                 let take = self.book.get(&id).expect("just switched");
                 let view = self.draft_view(take, false)?;
-                Ok((
-                    Json::Object(json_object! { "take_id" => id.clone(), "draft" => view }),
-                    vec![ToolEffect::TakeChanged(Some(id))],
-                ))
+                let result =
+                    Json::Object(json_object! { "take_id" => id.clone(), "draft" => view });
+                self.record(ToolEffect::TakeChanged(Some(id)));
+                Ok(result)
             }
 
             "park" => {
@@ -834,28 +835,23 @@ impl ToolRuntime {
                     return Err(RiffError::tool(format!("no take \"{id}\"")));
                 }
                 let active = self.book.active_id().map(str::to_owned);
-                Ok((
-                    Json::Object(json_object! { "parked" => id }),
-                    vec![ToolEffect::TakeChanged(active)],
-                ))
+                self.record(ToolEffect::TakeChanged(active));
+                Ok(Json::Object(json_object! { "parked" => id }))
             }
 
-            "list" => Ok((
-                Json::Object(json_object! {
-                    "takes" => Json::Array(self.book.takes().iter().map(|take| {
-                        Json::Object(json_object! {
-                            "take_id" => take.id.clone(),
-                            "label" => take.label.clone().map_or(Json::Null, Json::from),
-                            "status" => take.status.as_str(),
-                            "active" => self.book.active_id() == Some(take.id.as_str()),
-                            "title" => take.title.as_ref().map_or(Json::Null, |title| Json::from(title.text.clone())),
-                            "lines" => take.lines().len(),
-                            "updated_at" => take.updated_at.clone(),
-                        })
-                    }).collect()),
-                }),
-                Vec::new(),
-            )),
+            "list" => Ok(Json::Object(json_object! {
+                "takes" => Json::Array(self.book.takes().iter().map(|take| {
+                    Json::Object(json_object! {
+                        "take_id" => take.id.clone(),
+                        "label" => take.label.clone().map_or(Json::Null, Json::from),
+                        "status" => take.status.as_str(),
+                        "active" => self.book.active_id() == Some(take.id.as_str()),
+                        "title" => take.title.as_ref().map_or(Json::Null, |title| Json::from(title.text.clone())),
+                        "lines" => take.lines().len(),
+                        "updated_at" => take.updated_at.clone(),
+                    })
+                }).collect()),
+            })),
 
             "discard" => {
                 let id = take_id
@@ -865,10 +861,8 @@ impl ToolRuntime {
                     return Err(RiffError::tool(format!("no take \"{id}\"")));
                 }
                 let active = self.book.active_id().map(str::to_owned);
-                Ok((
-                    Json::Object(json_object! { "discarded" => id }),
-                    vec![ToolEffect::TakeChanged(active)],
-                ))
+                self.record(ToolEffect::TakeChanged(active));
+                Ok(Json::Object(json_object! { "discarded" => id }))
             }
 
             other => Err(RiffError::tool(format!("unknown takes action \"{other}\""))),
@@ -877,7 +871,7 @@ impl ToolRuntime {
 
     // MARK: - Submission
 
-    async fn submit_prompt(&mut self, args: &Json) -> Result<(Json, Vec<ToolEffect>)> {
+    async fn submit_prompt(&mut self, args: &Json) -> Result<Json> {
         let take_id = self.resolve_take_id(args.get_str("take_id"))?;
         self.require_open(&take_id)?;
 
@@ -895,16 +889,13 @@ impl ToolRuntime {
                 .collect()
         };
         if !missing.is_empty() {
-            return Ok((
-                Json::Object(json_object! {
-                    "submitted" => false,
-                    "reason" => format!(
-                        "nothing to send yet: no {} captured. Ask them what they want done.",
-                        missing.join(" or ")
-                    ),
-                }),
-                Vec::new(),
-            ));
+            return Ok(Json::Object(json_object! {
+                "submitted" => false,
+                "reason" => format!(
+                    "nothing to send yet: no {} captured. Ask them what they want done.",
+                    missing.join(" or ")
+                ),
+            }));
         }
 
         {
@@ -939,9 +930,12 @@ impl ToolRuntime {
 
         if !result.submitted {
             self.book.get_mut(&take_id).expect("take exists").status = TakeStatus::Drafting;
-            return Ok((submit_report(&result, &artifact.id, None), Vec::new()));
+            return Ok(submit_report(&result, &artifact.id, None));
         }
 
+        // The destination now has the prompt, so everything that records that fact happens before
+        // the next await. A handler dropped at its deadline part way through this would leave a
+        // sent take active, and the next thing spoken would land inside a prompt already gone out.
         let status = if keep_open {
             TakeStatus::Drafting
         } else {
@@ -954,23 +948,21 @@ impl ToolRuntime {
             submitted_at: Some(self.clock.now()),
             ..artifact.clone()
         };
+        self.record(ToolEffect::Submitted(Box::new(stored.clone())));
 
-        // The destination already has the prompt. Reporting a failed save as a failed submission
-        // would invite a retry that sends it twice, so the send is reported as what it is.
-        let store_warning = match self.store.save_artifact(stored.clone()).await {
+        if !keep_open {
+            self.book.clear_active();
+            self.record(ToolEffect::TakeChanged(None));
+        }
+
+        // Reporting a failed save as a failed submission would invite a retry that sends it twice,
+        // so the send is reported as what it is.
+        let store_warning = match self.store.save_artifact(stored).await {
             Ok(()) => None,
             Err(error) => Some(format!("it was sent, but saving a copy failed: {error}")),
         };
 
-        let mut effects = vec![ToolEffect::Submitted(Box::new(stored))];
-        if !keep_open {
-            // Without this the submitted take stays active and the next line spoken lands inside a
-            // prompt that has already been sent.
-            self.book.clear_active();
-            effects.push(ToolEffect::TakeChanged(None));
-        }
-
-        Ok((submit_report(&result, &artifact.id, store_warning), effects))
+        Ok(submit_report(&result, &artifact.id, store_warning))
     }
 
     // MARK: - Internals

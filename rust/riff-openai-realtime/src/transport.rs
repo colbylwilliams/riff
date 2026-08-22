@@ -159,6 +159,11 @@ pub fn decode_base64(value: &str) -> Vec<u8> {
 
     let mut out = Vec::with_capacity(symbols.len() * 3 / 4);
     for chunk in symbols.chunks(4) {
+        // A lone trailing symbol carries no whole byte. Emitting one would shift every sample after
+        // it, so a malformed payload costs nothing rather than corrupting the stream.
+        if chunk.len() < 2 {
+            break;
+        }
         let mut packed = 0u32;
         for (index, symbol) in chunk.iter().enumerate() {
             packed |= u32::from(*symbol) << (18 - 6 * index);
@@ -211,6 +216,13 @@ mod tests {
                 "length {length}"
             );
         }
+    }
+
+    #[test]
+    fn ignores_a_lone_trailing_symbol_rather_than_shifting_the_stream() {
+        // Four symbols carry three bytes; a fifth on its own carries none. Emitting a byte for it
+        // would shift every sample the host plays after it.
+        assert_eq!(decode_base64("TWFuX"), b"Man");
     }
 
     #[test]

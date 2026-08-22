@@ -234,6 +234,30 @@ fn is_word_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
+/// The next character starting at `at`, or `None` at the end or on a byte that starts nothing.
+///
+/// The width comes from the lead byte so this stays constant time: validating the rest of the input
+/// on every whitespace character would make redaction quadratic in the length of a pasted line.
+fn next_char(bytes: &[u8], at: usize) -> Option<char> {
+    let width = match *bytes.get(at)? {
+        0x00..=0x7f => 1,
+        0xc0..=0xdf => 2,
+        0xe0..=0xef => 3,
+        0xf0..=0xf7 => 4,
+        _ => return None,
+    };
+    std::str::from_utf8(bytes.get(at..at + width)?)
+        .ok()?
+        .chars()
+        .next()
+}
+
+/// Whitespace as the shared `\s` pattern means it: everything Unicode calls white space, plus the
+/// byte order mark, which `char::is_whitespace` excludes and the pattern does not.
+fn is_pattern_whitespace(character: char) -> bool {
+    character.is_whitespace() || character == '\u{feff}'
+}
+
 /// Every pattern starts at a word boundary, so a credential shape inside a longer identifier is
 /// left alone rather than half-redacted.
 fn at_word_boundary(bytes: &[u8], at: usize) -> bool {
@@ -297,8 +321,14 @@ fn match_at(bytes: &[u8], at: usize, pattern: &SecretPattern) -> Option<usize> {
             })?;
             let mut after = at + keyword.len();
             let space_start = after;
-            while bytes.get(after).is_some_and(u8::is_ascii_whitespace) {
-                after += 1;
+            // Decoded as characters rather than bytes because the separator is `\s` in the shared
+            // pattern: a credential pasted out of a rendered page arrives behind a non-breaking
+            // space, and tidy_whitespace would then fold it into a clean, readable, unredacted line.
+            while let Some(character) = next_char(bytes, after) {
+                if !is_pattern_whitespace(character) {
+                    break;
+                }
+                after += character.len_utf8();
             }
             if after == space_start {
                 return None;
@@ -366,6 +396,22 @@ mod tests {
             redact_secrets("api-key   abcdefghijklmnopqrstuvwxyz"),
             "[redacted]"
         );
+    }
+
+    #[test]
+    fn redacts_a_credential_behind_the_whitespace_a_paste_produces() {
+        // A token copied out of a rendered page arrives behind a non-breaking space. Missing it
+        // would be worse than a no-op: `tidy_whitespace` runs afterwards and would fold the line
+        // into a clean, readable, unredacted credential on its way into the ledger.
+        for separator in ['\u{a0}', '\u{2009}', '\u{3000}', '\u{feff}', '\u{b}'] {
+            let text = format!("Bearer{separator}abcdefghijklmnopqrstuvwxyz");
+            assert_eq!(
+                redact_secrets(&text),
+                "[redacted]",
+                "U+{:04X} separated the credential",
+                separator as u32
+            );
+        }
     }
 
     #[test]

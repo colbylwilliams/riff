@@ -488,3 +488,51 @@ fn pushes_new_vocabulary_without_resending_the_whole_configuration() {
             .is_some_and(|prompt| prompt.contains("Kubernetes"))
     );
 }
+
+#[test]
+fn bounds_the_whole_handshake_rather_than_the_gap_between_messages() {
+    struct SleeplessClock(riff_core::SystemClock);
+    impl riff_core::Clock for SleeplessClock {
+        fn now(&self) -> String {
+            self.0.now()
+        }
+        fn monotonic_ms(&self) -> u64 {
+            self.0.monotonic_ms()
+        }
+        fn sleep(&self, _milliseconds: u64) -> BoxFuture<'static, ()> {
+            Box::pin(std::future::ready(()))
+        }
+    }
+
+    let transport = FakeTransport::new(TransportKind::WebSocket);
+    let factory = Arc::new(FakeFactory {
+        transport: transport.clone(),
+        request: Mutex::new(None),
+    });
+
+    // A chatty endpoint that never says `session.created`. A deadline recreated per message would
+    // never fire, and `connect` would stay pending forever.
+    for _ in 0..4 {
+        transport.deliver(TransportMessage::Event(Json::Object(
+            json_object! { "type" => "rate_limits.updated" },
+        )));
+    }
+
+    let bundle = bundle();
+    let mut options =
+        OpenAIRealtimeOptions::new(Arc::new(ApiKeyCredentials::new("sk-test")), factory);
+    options.clock = Arc::new(SleeplessClock(riff_core::SystemClock::new()));
+
+    let provider = OpenAIRealtimeProvider::new(options);
+    let Err(fault) = block_on(provider.connect(ConnectRequest {
+        instructions: bundle.instructions.clone(),
+        tools: bundle.tools.clone(),
+        session: bundle.session.clone(),
+        vocabulary: Vec::new(),
+    })) else {
+        panic!("a handshake that never completes must time out");
+    };
+
+    assert_eq!(fault.code, "handshake_failed");
+    assert!(fault.message.contains("timed out"), "got {}", fault.message);
+}
