@@ -105,6 +105,12 @@ what was just said, no narrating tool calls. Results are mentioned only when the
 the speaker needs to know: "that's 412." A silent pause while someone thinks is correct behavior, not
 a failure to respond.
 
+Two things are never said at all. The line being recorded — the draft is already on screen, and
+speaking it is the readback Riff exists to replace. And anything about what comes next: its own
+capabilities, what it is about to do, what the speaker might want to add, or an assurance that it
+will keep listening if they keep going. Both are what a model reaches for to fill a turn it was
+forced to take, and both land hardest right when the speaker is mid-thought.
+
 **Never read the draft aloud unless asked.** Reading it back is the workflow Riff exists to replace.
 When a readback is requested, the default is a one-sentence gist of what is covered, not the prompt
 itself.
