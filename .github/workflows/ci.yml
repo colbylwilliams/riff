@@ -33,7 +33,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup component add clippy rustfmt
-      - run: cargo fmt --check --manifest-path rust/Cargo.toml
+      # `--all` because the workspace root is virtual: without it rustfmt looks for targets there
+      # and finds none.
+      - run: cargo fmt --all --check --manifest-path rust/Cargo.toml
       - run: cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
       # Runs the same conformance cases as the TypeScript and Swift suites.
       - run: cargo test --manifest-path rust/Cargo.toml
