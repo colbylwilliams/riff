@@ -13,10 +13,12 @@
     "bundle:check": "node tools/build-bundle.mjs --check",
     "build": "npm run bundle && tsc --build",
     "clean": "tsc --build --clean",
-    "test": "npm run bundle:check && npm run build && node --test \"packages/*/test/**/*.test.ts\"",
+    "test": "npm run bundle:check && npm run build && node --test \"packages/*/test/**/*.test.ts\" && npm run demo:verify",
     "typecheck": "tsc --build",
+    "demo": "node examples/riff-web/server.mjs",
+    "demo:verify": "node examples/riff-web/verify.mjs",
     "swift:test": "swift test --package-path swift",
-    "rust:test": "cargo test --manifest-path rust/Cargo.toml"
+    "rust:test": "cd rust && cargo test"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",

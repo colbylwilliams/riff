@@ -11,6 +11,7 @@ Cross-cutting rules for AI coding agents working in this repository. Pair this g
 | [`swift/`](swift/) | The Swift binding: `RiffCore` (the same engine, natively), `RiffOpenAIRealtime`, and `RiffAudio` (capture, playback, echo cancellation). |
 | [`rust/`](rust/) | The Rust binding: [`riff-core`](rust/riff-core/) (the same engine again) and [`riff-openai-realtime`](rust/riff-openai-realtime/). No dependencies and no runtime — see [its README](rust/README.md). |
 | [`tools/build-bundle.mjs`](tools/build-bundle.mjs) | Compiles `core/agent` into the committed bundle, validates the manifest, and mirrors the bundle and conformance cases into each binding's build. |
+| [`examples/`](examples/) | Embedding applications, kept honest by running the real engine rather than a mock. [`riff-web`](examples/riff-web/) is a browser demo with a microphone, a live draft, and a send. |
 | [`docs/`](docs/) | Architecture, the grounding algorithm, the artifact contract, the host bridge, providers, conformance, security. Design rationale lives here. |
 
 ## Working principles
