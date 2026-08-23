@@ -94,6 +94,8 @@ pub struct ToolRuntime {
     clock: Arc<dyn Clock>,
     /// Effects recorded so far by the running handler. See [`ToolRuntime::record`].
     effects: Vec<ToolEffect>,
+    /// A result that is already true. See [`ToolRuntime::commit`].
+    committed: Option<Json>,
 }
 
 impl ToolRuntime {
@@ -126,6 +128,7 @@ impl ToolRuntime {
             store,
             clock,
             effects: Vec::new(),
+            committed: None,
         }
     }
 
@@ -137,6 +140,15 @@ impl ToolRuntime {
     /// holds — has to survive that, or Riff loses its own record of it.
     fn record(&mut self, effect: ToolEffect) {
         self.effects.push(effect);
+    }
+
+    /// Records a result that is already true, whether or not the handler gets to finish.
+    ///
+    /// The deadline exists so a host that never answers cannot stall a turn, but past the point
+    /// where the world has changed there is nothing left to give up on. Reporting a timeout there
+    /// would tell the speaker their prompt did not go when it did.
+    fn commit(&mut self, result: Json) {
+        self.committed = Some(result);
     }
 
     /// The fidelity gate this runtime checks lines against.
@@ -223,6 +235,7 @@ impl ToolRuntime {
         // Drained whatever the outcome: a handler abandoned at its deadline may already have
         // changed state the session has to hear about.
         let effects = std::mem::take(&mut self.effects);
+        let committed = self.committed.take();
         let duration_ms = elapsed(self);
 
         match outcome {
@@ -236,14 +249,25 @@ impl ToolRuntime {
                 effects,
                 ..ToolOutcome::error(error.to_string(), duration_ms)
             },
-            None => ToolOutcome {
-                effects,
-                ..ToolOutcome::error(
-                    format!(
-                        "{name} did not answer within {timeout_ms}ms; tell them it is not responding"
-                    ),
+            // A handler that committed a result before running out of time reports it. Saying the
+            // tool never answered would tell the model a prompt the destination has already taken
+            // did not go.
+            None => match committed {
+                Some(result) => ToolOutcome {
+                    ok: true,
+                    result,
                     duration_ms,
-                )
+                    effects,
+                },
+                None => ToolOutcome {
+                    effects,
+                    ..ToolOutcome::error(
+                        format!(
+                            "{name} did not answer within {timeout_ms}ms; tell them it is not responding"
+                        ),
+                        duration_ms,
+                    )
+                },
             },
         }
     }
@@ -528,11 +552,10 @@ impl ToolRuntime {
             .into_iter()
             .partition(|heard| is_plausible_mishearing(heard, &canonical));
 
-        let known = self
-            .lexicon
-            .lookup(&canonical)
-            .iter()
-            .any(|term| term.canonical == canonical);
+        // Deliberately not `lookup`: an uncorroborated term is still recorded, because it still
+        // biases transcription, so asking `lookup` would let this call find what an identical
+        // earlier call stored and treat the agent's own assertion as corroboration.
+        let known = self.lexicon.is_corroborated(&canonical);
         let confirmed = known
             || self
                 .host
@@ -954,6 +977,11 @@ impl ToolRuntime {
             self.book.clear_active();
             self.record(ToolEffect::TakeChanged(None));
         }
+
+        // Committed before the save for the same reason the state changes are: whether the local
+        // copy is kept has no bearing on whether the prompt went, and a deadline landing on the save
+        // must not turn a delivered prompt into a reported failure the speaker would act on.
+        self.commit(submit_report(&result, &artifact.id, None));
 
         // Reporting a failed save as a failed submission would invite a retry that sends it twice,
         // so the send is reported as what it is.

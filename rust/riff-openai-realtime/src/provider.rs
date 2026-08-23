@@ -222,7 +222,13 @@ async fn await_handshake(
                 pending.extend(mapped.events);
 
                 if let Some(fault) = failure {
-                    return Err(ProviderFault::retryable("handshake_failed", fault.message));
+                    // The classification is preserved: a rejected session configuration will be
+                    // rejected again, and telling an embedder with a reconnect loop otherwise makes
+                    // it retry a deterministic error forever.
+                    return Err(ProviderFault {
+                        code: "handshake_failed".to_owned(),
+                        ..fault
+                    });
                 }
                 if let Some((session_id, model)) = identity {
                     return Ok(Handshake {
@@ -233,7 +239,12 @@ async fn await_handshake(
                 }
             }
             Some(TransportMessage::Failed(fault)) => {
-                return Err(ProviderFault::retryable("handshake_failed", fault.message));
+                // A transport that reports a fatal authentication or configuration fault is telling
+                // the embedder not to bother reconnecting. Keep it.
+                return Err(ProviderFault {
+                    code: "handshake_failed".to_owned(),
+                    ..fault
+                });
             }
             Some(TransportMessage::Closed(reason)) => {
                 return Err(closed_during_handshake(reason));

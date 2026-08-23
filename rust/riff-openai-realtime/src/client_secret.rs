@@ -152,12 +152,18 @@ pub fn parse_client_secret(status: u16, body: &str) -> Result<ClientSecret, Prov
         )
     })?;
 
-    let value = parsed.get_str("value").ok_or_else(|| {
-        ProviderFault::retryable(
-            "client_secret_failed",
-            "the client secret response had no value",
-        )
-    })?;
+    // An empty string is as unusable as a missing one, and the TypeScript binding's falsy check
+    // rejects both. Accepting it would open a connection with an empty bearer token instead of
+    // reporting the minting failure this function promises.
+    let value = parsed
+        .get_str("value")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            ProviderFault::retryable(
+                "client_secret_failed",
+                "the client secret response had no value",
+            )
+        })?;
 
     Ok(ClientSecret {
         value: value.to_owned(),
@@ -250,6 +256,8 @@ mod tests {
         let error = parse_client_secret(401, "{\"error\":\"nope\"}").unwrap_err();
         assert!(error.message.contains("401"));
         assert!(parse_client_secret(200, "{}").is_err());
+        // An empty token would open a connection that fails on the first frame.
+        assert!(parse_client_secret(200, "{\"value\":\"\"}").is_err());
         assert_eq!(
             parse_client_secret(200, "{\"value\":\"ek_1\",\"expires_at\":123}")
                 .unwrap()

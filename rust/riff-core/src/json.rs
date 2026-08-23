@@ -548,22 +548,64 @@ impl Parser<'_> {
         Ok(value)
     }
 
+    /// Scans a JSON number, which is a narrower grammar than `f64::from_str` accepts.
+    ///
+    /// `+1`, `01`, `.5`, and `1.` all parse as floats and none of them is JSON. Both other bindings
+    /// decode with a library that rejects them, so accepting them would let the same tool call
+    /// succeed here and fail there.
     fn number(&mut self) -> Result<Json, String> {
         let start = self.at;
+        let invalid = |at: usize| Err(format!("invalid number at byte {at}"));
+
         if self.peek() == Some(b'-') {
             self.at += 1;
         }
-        while matches!(
-            self.peek(),
-            Some(b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-')
-        ) {
-            self.at += 1;
+
+        match self.peek() {
+            // A leading zero may not be followed by more digits: `01` is two tokens, not a number.
+            Some(b'0') => self.at += 1,
+            Some(b'1'..=b'9') => {
+                while matches!(self.peek(), Some(b'0'..=b'9')) {
+                    self.at += 1;
+                }
+            }
+            _ => return invalid(self.at),
         }
+
+        if self.peek() == Some(b'.') {
+            self.at += 1;
+            if !matches!(self.peek(), Some(b'0'..=b'9')) {
+                return invalid(self.at);
+            }
+            while matches!(self.peek(), Some(b'0'..=b'9')) {
+                self.at += 1;
+            }
+        }
+
+        if matches!(self.peek(), Some(b'e' | b'E')) {
+            self.at += 1;
+            if matches!(self.peek(), Some(b'+' | b'-')) {
+                self.at += 1;
+            }
+            if !matches!(self.peek(), Some(b'0'..=b'9')) {
+                return invalid(self.at);
+            }
+            while matches!(self.peek(), Some(b'0'..=b'9')) {
+                self.at += 1;
+            }
+        }
+
         let text = std::str::from_utf8(&self.bytes[start..self.at])
             .map_err(|_| "invalid number".to_owned())?;
-        text.parse::<f64>()
-            .map(Json::Number)
-            .map_err(|_| format!("invalid number \"{text}\""))
+        let value: f64 = text
+            .parse()
+            .map_err(|_| format!("invalid number \"{text}\""))?;
+        if !value.is_finite() {
+            // A literal too large to represent. Carrying an infinity forward would fail schema
+            // validation later with a message about the wrong thing entirely.
+            return Err(format!("number \"{text}\" is out of range"));
+        }
+        Ok(Json::Number(value))
     }
 }
 
@@ -604,6 +646,21 @@ mod tests {
     fn rejects_malformed_arguments() {
         assert!(Json::parse("{\"a\":").is_err());
         assert!(Json::parse("{}{}").is_err());
+    }
+
+    #[test]
+    fn rejects_number_spellings_that_are_not_json() {
+        for text in ["+1", "01", ".5", "1.", "1.e3", "1e", "1e+", "-", "0x1"] {
+            assert!(
+                Json::parse(text).is_err(),
+                "\"{text}\" is not a JSON number"
+            );
+        }
+        for text in ["0", "-0", "1", "-1.5", "1e3", "1E+3", "1.5e-3", "0.5"] {
+            assert!(Json::parse(text).is_ok(), "\"{text}\" is a JSON number");
+        }
+        // Out of range rather than silently infinite.
+        assert!(Json::parse("1e999").is_err());
     }
 
     #[test]

@@ -960,14 +960,16 @@ fn a_deadline_cannot_erase_the_record_that_a_prompt_was_already_sent() {
         .call_tool("submit_prompt", Json::object());
     block_on(session.step());
 
-    // The model is told the tool did not answer, so it does not report a send it cannot confirm.
+    // The prompt went, so the model is told it went. Reporting a timeout here is what invites a
+    // re-send of something the destination already has.
     let result = provider.connection().result_for(&id);
-    assert!(
-        result
-            .get_str("error")
-            .is_some_and(|error| error.contains("did not answer")),
+    assert_eq!(
+        result.get("submitted").and_then(Json::as_bool),
+        Some(true),
         "got {result:?}"
     );
+    assert_eq!(result.get_str("prompt_id"), Some("p1"));
+    assert!(result.get_str("error").is_none());
 
     assert_eq!(host.submitted().len(), 1, "the host took it exactly once");
     assert_eq!(
@@ -1060,4 +1062,47 @@ fn refuses_to_start_when_the_host_cannot_say_what_the_world_contains() {
         fault.message
     );
     assert_eq!(session.state(), SessionState::Failed);
+}
+
+#[test]
+fn will_not_let_the_agent_corroborate_its_own_term_by_asserting_it_twice() {
+    // "quagle" is a plausible mishearing of "Quaggle", so the only thing standing between the agent
+    // and a live alias is corroboration. The host knows nothing, and the agent recording the term a
+    // second time must not count as something outside the conversation vouching for it.
+    let mut harness = Harness::start();
+
+    for attempt in 1..=2 {
+        let result = harness.call(
+            "record_term",
+            Json::Object(json_object! {
+                "canonical" => "Quaggle",
+                "kind" => "product",
+                "heard_as" => vec!["quagle"],
+            }),
+        );
+        assert_eq!(
+            result.get("corrections").and_then(Json::as_i64),
+            Some(0),
+            "attempt {attempt} turned the agent's own assertion into a correction"
+        );
+        assert!(
+            result
+                .get_str("note")
+                .is_some_and(|note| note.contains("cannot be used as a spelling correction")),
+            "attempt {attempt} should still say the term is unvouched for"
+        );
+    }
+
+    harness.say("the quagle build is failing");
+    let drafted = harness.call(
+        "draft_update",
+        upsert("intent", "the Quaggle build is failing"),
+    );
+    assert_eq!(
+        drafted
+            .get("rejected")
+            .map(|rejected| rejected.array_or_empty().len()),
+        Some(1),
+        "an uncorroborated alias must never rewrite what they said"
+    );
 }

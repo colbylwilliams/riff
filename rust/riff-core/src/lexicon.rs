@@ -28,6 +28,12 @@ pub struct Canonicalized {
 #[derive(Debug, Clone, Default)]
 pub struct Lexicon {
     terms: Vec<LexiconTerm>,
+    /// Which terms something outside the conversation vouched for, parallel to `terms`.
+    ///
+    /// Held separately from the term because it is not a property of the vocabulary — it is a
+    /// property of where the vocabulary came from, and it is the only thing standing between the
+    /// agent and an alias of its own invention.
+    corroborated: Vec<bool>,
     /// Normalized canonical form, space joined, to the position in `terms`.
     by_key: HashMap<String, usize>,
     /// Normalized alias phrase to the canonical token sequence and the term it belongs to.
@@ -62,6 +68,20 @@ impl Lexicon {
     /// Every term, in the order they were first added.
     pub fn terms(&self) -> &[LexiconTerm] {
         &self.terms
+    }
+
+    /// Whether something outside this conversation vouched for the term.
+    ///
+    /// The plain [`Lexicon::lookup`] cannot answer this: an uncorroborated term is still recorded,
+    /// because it still biases transcription. Asking `lookup` instead would let the agent corroborate
+    /// its own assertion by making it twice — the second call would find what the first one stored.
+    pub fn is_corroborated(&self, canonical: &str) -> bool {
+        let key = tokenize(canonical).join(" ");
+        self.by_key
+            .get(&key)
+            .and_then(|index| self.corroborated.get(*index))
+            .copied()
+            .unwrap_or(false)
     }
 
     /// Adds or replaces a curated term, whose aliases affect grounding.
@@ -100,11 +120,15 @@ impl Lexicon {
                     scope: term.scope.clone().or_else(|| existing.scope.clone()),
                 };
                 self.terms[index] = merged.clone();
+                // Sticky: curated vocabulary that the agent later re-asserts does not stop being
+                // vouched for, but an assertion never promotes a term on its own.
+                self.corroborated[index] |= corroborated;
                 merged
             }
             None => {
                 self.by_key.insert(key.clone(), self.terms.len());
                 self.terms.push(term.clone());
+                self.corroborated.push(corroborated);
                 term
             }
         };
@@ -385,6 +409,40 @@ mod tests {
         let result = lexicon.canonicalize_text("the get hub action");
         assert_eq!(result.tokens, ["the", "github", "action"]);
         assert!(result.substituted);
+    }
+
+    #[test]
+    fn will_not_let_a_term_vouch_for_itself_by_being_asserted_twice() {
+        // The agent records an unknown term, then records it again. The second call must not find
+        // what the first one stored and treat that as corroboration, or the whole gate is a
+        // formality the agent can step around.
+        let mut lexicon = Lexicon::default();
+        let term = LexiconTerm {
+            canonical: "CSV".into(),
+            kind: "other".into(),
+            heard_as: vec!["database".into()],
+            ..LexiconTerm::default()
+        };
+
+        for _ in 0..2 {
+            let known = lexicon.is_corroborated(&term.canonical);
+            assert!(!known, "nothing outside the conversation knows this term");
+            lexicon.add_with(term.clone(), known);
+        }
+
+        let result = lexicon.canonicalize_text("we need to fix the database import");
+        assert!(!result.substituted, "the alias must never have taken hold");
+        assert_eq!(
+            result.tokens.join(" "),
+            "we need to fix the database import"
+        );
+    }
+
+    #[test]
+    fn treats_curated_vocabulary_as_vouched_for() {
+        let lexicon = Lexicon::new([LexiconTerm::new("GitHub", "product")]);
+        assert!(lexicon.is_corroborated("GitHub"));
+        assert!(!lexicon.is_corroborated("Quaggle"));
     }
 
     #[test]

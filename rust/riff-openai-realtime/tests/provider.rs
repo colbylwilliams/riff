@@ -391,6 +391,44 @@ fn refuses_a_handshake_the_server_rejected_instead_of_waiting_for_a_timeout() {
 
     assert_eq!(fault.code, "handshake_failed");
     assert!(fault.message.contains("unknown parameter"));
+    assert!(
+        !fault.retryable,
+        "a rejected session configuration will be rejected again; an embedder with a reconnect \
+         loop would otherwise retry a deterministic error forever"
+    );
+}
+
+#[test]
+fn keeps_a_transport_faults_own_verdict_on_whether_to_reconnect() {
+    for (fatal, expected) in [(true, false), (false, true)] {
+        let transport = FakeTransport::new(TransportKind::WebSocket);
+        let factory = Arc::new(FakeFactory {
+            transport: transport.clone(),
+            request: Mutex::new(None),
+        });
+        transport.deliver(TransportMessage::Failed(if fatal {
+            ProviderFault::fatal("bad_credentials", "that key is not valid")
+        } else {
+            ProviderFault::retryable("socket_closed", "the connection dropped")
+        }));
+
+        let bundle = bundle();
+        let provider = OpenAIRealtimeProvider::new(OpenAIRealtimeOptions::new(
+            Arc::new(ApiKeyCredentials::new("sk-test")),
+            factory,
+        ));
+        let Err(fault) = block_on(provider.connect(ConnectRequest {
+            instructions: bundle.instructions.clone(),
+            tools: bundle.tools.clone(),
+            session: bundle.session.clone(),
+            vocabulary: Vec::new(),
+        })) else {
+            panic!("a failed transport cannot complete a handshake");
+        };
+
+        assert_eq!(fault.code, "handshake_failed");
+        assert_eq!(fault.retryable, expected, "fatal={fatal}");
+    }
 }
 
 #[test]
