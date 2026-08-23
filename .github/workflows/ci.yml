@@ -33,6 +33,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup component add clippy rustfmt
+      # `rust-version` is a claim about what the crates build on, and nothing else here tests it:
+      # the runner ships whatever stable is current, so the floor would rot unnoticed.
+      - run: rustup toolchain install 1.88 --profile minimal
+      - run: cargo +1.88 check --manifest-path rust/Cargo.toml --workspace --all-targets
       # `--all` because the workspace root is virtual: without it rustfmt looks for targets there
       # and finds none.
       - run: cargo fmt --all --check --manifest-path rust/Cargo.toml
