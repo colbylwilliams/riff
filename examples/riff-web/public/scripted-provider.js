@@ -26,6 +26,8 @@ export class ScriptedProvider {
   #aborted = false;
   #pendingResponse = null;
   #responseSequence = 0;
+  #activeResponse = null;
+  #cancelledResponse = null;
 
   /**
    * @param {object} options
@@ -64,6 +66,8 @@ export class ScriptedProvider {
 
   async connect() {
     this.#aborted = false;
+    this.#activeResponse = null;
+    this.#cancelledResponse = null;
 
     this.#connection = {
       sessionId: "sess_scripted",
@@ -78,7 +82,11 @@ export class ScriptedProvider {
         this.#pendingResponse?.();
         this.#pendingResponse = null;
       },
-      cancelResponse: () => {},
+      cancelResponse: () => {
+        // Advertised as `bargeIn`, so it has to actually cut the turn short. Without this the
+        // scripted response keeps emitting and finishes over whoever just interrupted it.
+        this.#cancelledResponse = this.#activeResponse;
+      },
       updateSession: () => {},
       on: (listener) => {
         this.#listeners.add(listener);
@@ -133,14 +141,26 @@ export class ScriptedProvider {
   async #respond(scripted) {
     const text = this.#prepareText(scripted);
     const responseId = `resp_${++this.#responseSequence}`;
+    this.#activeResponse = responseId;
     this.#emit({ type: "response.started", responseId });
     await this.#sleep(320);
 
+    const cancelled = () => this.#aborted || this.#cancelledResponse === responseId;
+
     for (const word of text.split(" ")) {
-      if (this.#aborted) break;
+      if (cancelled()) break;
       this.#emit({ type: "response.text.delta", responseId, delta: `${word} ` });
       this.#emit({ type: "response.audio", responseId, audio: SILENT_CHUNK });
       await this.#sleep(90);
+    }
+
+    this.#activeResponse = null;
+
+    // A cancelled turn is not a finished one: it produced no final text and gets no `response.done`,
+    // or the session would treat an interruption as the agent having had its say.
+    if (cancelled()) {
+      if (!this.#aborted) this.#emit({ type: "response.cancelled", responseId });
+      return;
     }
 
     this.#emit({ type: "response.audio.done", responseId });

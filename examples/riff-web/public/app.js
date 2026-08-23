@@ -210,38 +210,52 @@ async function buildLive() {
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
   });
-  const peer = new RTCPeerConnection();
 
-  const provider = new OpenAIRealtimeProvider({
-    transport: "webrtc",
-    credentials: clientSecretCredentials(async () => {
-      const response = await fetch("/api/riff/token", { method: "POST" });
-      if (!response.ok) throw new Error(`token endpoint said ${response.status}: ${await response.text()}`);
-      return response.json();
-    }),
-    webrtc: {
-      peerConnection: () => peer,
-      tracks: stream.getAudioTracks(),
-      onRemoteTrack: (track, streams) => {
-        ui.agentAudio.srcObject = streams[0] ?? new MediaStream([track]);
+  // Everything past here can throw, and by now the microphone is live. Failing without releasing it
+  // leaves the browser's recording indicator on for a session that never started.
+  let peer;
+  let meter;
+  try {
+    peer = new RTCPeerConnection();
+
+    const provider = new OpenAIRealtimeProvider({
+      transport: "webrtc",
+      credentials: clientSecretCredentials(async () => {
+        const response = await fetch("/api/riff/token", { method: "POST" });
+        if (!response.ok) throw new Error(`token endpoint said ${response.status}: ${await response.text()}`);
+        return response.json();
+      }),
+      webrtc: {
+        peerConnection: () => peer,
+        tracks: stream.getAudioTracks(),
+        onRemoteTrack: (track, streams) => {
+          ui.agentAudio.srcObject = streams[0] ?? new MediaStream([track]);
+        },
       },
-    },
-  });
+    });
 
-  const { stopMeter, audioContext } = startMeter(stream);
+    meter = startMeter(stream);
 
-  return {
-    stream,
-    peer,
-    stopMeter,
-    audioContext,
-    session: new RiffSession({
-      bundle,
-      host: buildHost(),
-      provider: observeProvider(provider, { onToolResult: handleToolResult }),
-      store: new MemoryStore({ motifs: DEMO_MOTIFS }),
-    }),
-  };
+    return {
+      stream,
+      peer,
+      stopMeter: meter.stopMeter,
+      audioContext: meter.audioContext,
+      session: new RiffSession({
+        bundle,
+        host: buildHost(),
+        provider: observeProvider(provider, { onToolResult: handleToolResult }),
+        store: new MemoryStore({ motifs: DEMO_MOTIFS }),
+      }),
+    };
+  } catch (error) {
+    meter?.stopMeter();
+    await meter?.audioContext?.close().catch(() => {});
+    peer?.close();
+    for (const track of stream.getTracks()) track.stop();
+    ui.meter.hidden = true;
+    throw error;
+  }
 }
 
 /* ── events ──────────────────────────────────────────────────────────────── */
@@ -272,6 +286,9 @@ function handleEvent(event) {
       break;
 
     case "interrupted":
+      // The cut-off turn never reaches a final transcript, so the entry it was filling has to be
+      // released or the next thing Riff says would be appended to a sentence it abandoned.
+      agentEntry = null;
       addEntry({ head: "interrupted", note: "they started talking over it", variant: "said" });
       break;
 
@@ -331,6 +348,9 @@ function handleToolResult({ name, args, result }) {
   if (name === "submit_prompt") {
     lastSubmission = result;
     addEntry({ head: "submit_prompt", note: result?.message ?? "sent" });
+    // Filing for real is opt-in per send, not per session. Left ticked, replaying the script would
+    // open a second issue without anyone asking for one.
+    ui.allowIssues.checked = false;
     showSent();
     return;
   }
