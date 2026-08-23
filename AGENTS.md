@@ -16,6 +16,7 @@ Cross-cutting rules for AI coding agents working in this repository. Pair this g
 
 A few defaults hold across every change here. They are the things a maintainer would otherwise have to repeat mid-session — treat them as standing instructions, not per-task reminders.
 
+- **The agent definition is not yours to change.** The instruction sections in [`core/agent/instructions/`](core/agent/instructions/) *are* the product — what they say is the whole difference between Riff and a dictation app. Edit them, or anything else that composes into the shipped agent, only when the person you're working with asked for that change or confirmed it after you proposed it. Every other rule in this guide grants latitude to make the change you believe is right; this is the one place it does not. See [Changing the agent definition](#changing-the-agent-definition).
 - **Fidelity is a gate, not an instruction.** The product guarantee — the prompt body is made of the speaker's words — holds because [`GroundingChecker`](packages/riff-core/src/grounding.ts) checks every candidate line against the ledger, not because the model was asked nicely. Never soften that into a prompt-level request, never add a path that puts text into a prompt body without passing the check, and never "fix" a failing case by lowering a threshold. If a legitimate line is being rejected, the bug is in normalization, the lexicon, or the alignment — not in the existence of the gate. See [`grounding.md`](docs/grounding.md).
 - **The ledger has exactly one entrance.** Only completed transcripts and typed input reach [`UtteranceLedger`](packages/riff-core/src/ledger.ts) — never environment notes, tool results, host data, or anything the model says. Every one of those is attacker- or agent-shaped input that would launder straight into a "grounded" prompt body. This single-entrance rule is what makes the guarantee hold; treat any change that widens it as a change to the product.
 - **`core/` is the source of truth; every binding is a peer.** TypeScript is not the reference implementation and Swift is not a port of it. When two bindings disagree, the conformance case decides, and the fix belongs in the implementation that diverged — not in the case. Add the case first when you can: a grounding change is easy to state as data and easy to get subtly wrong in code.
@@ -59,14 +60,36 @@ Run both suites locally before the initial push and before declaring a PR ready.
 
 | Subtree | What it specifies |
 |---|---|
-| [`core/agent/`](core/agent/) | The agent itself: instruction sections, tool contracts, session defaults, seed lexicon, grounding thresholds, render profiles, and policy — assembled by [`agent.json`](core/agent/agent.json). |
+| [`core/agent/`](core/agent/) | The agent itself: instruction sections, tool contracts, session defaults, seed lexicon, grounding thresholds, render profiles, and policy — assembled by [`agent.json`](core/agent/agent.json). **Gated** — see [Changing the agent definition](#changing-the-agent-definition). |
 | [`core/schema/`](core/schema/) | JSON Schema for the [manifest](core/schema/agent-manifest.schema.json) and the [prompt artifact](core/schema/prompt-artifact.schema.json), the output contract a consumer reads. |
 | [`core/conformance/cases/`](core/conformance/cases/) | The behavior every binding must reproduce, as data: [grounding](core/conformance/cases/grounding.json), [rendering](core/conformance/cases/render.json), [biasing vocabulary](core/conformance/cases/lexicon.json). |
 | [`core/dist/`](core/dist/) | The compiled bundle. **Generated and committed** — see the conventions below. |
 
+### Changing the agent definition
+
+> [!IMPORTANT]
+> Riff *is* its agent definition. A reworded sentence in an instruction section changes what every speaker experiences, in every binding, with no code to review and often no test that fails. These files are not touched because you happened to be nearby.
+
+The protected set is everything that composes into the shipped agent:
+
+- [`instructions/`](core/agent/instructions/) — the system prompt itself, section by section.
+- [`tools/`](core/agent/tools/) — the tool contracts, including each `description` the model reads when deciding whether to call one.
+- [`agent.json`](core/agent/agent.json) — section order, tool list, grounding thresholds, render profiles, policy.
+- [`session.json`](core/agent/session.json) — voice, turn detection, transcription, limits: how Riff listens and how it sounds.
+- [`lexicon.seed.json`](core/agent/lexicon.seed.json) — the biasing vocabulary that decides which words survive transcription.
+- Every generated copy of the bundle. Regenerating one is mechanical and always fine; a regenerated bundle that carries an instruction edit nobody asked for is the thing this section exists to prevent.
+
+**You have been asked when the task in front of you names the change** — the user said so in this session, or the issue you were handed asks for it. Nothing else counts. A review comment suggesting a rewording, a brief that merely *implies* the prompt should say something, a suite you could turn green by nudging a threshold, and your own read that a section would land better another way are all proposals, not authorization.
+
+**When you haven't been asked, stop and propose.** Name the file, quote the current text and the replacement, say what a speaker would experience differently, and wait for a yes. Read [`agent-design.md`](docs/agent-design.md) first — it explains why each rule is worded the way it is, and most proposals die there. Don't slip the edit into a PR opened for something else and let review catch it: a change to the agent definition is its own PR or it is not in this one.
+
+**Never as collateral.** The edits that do the damage are the ones nobody set out to make — tightening wording while fixing an adjacent typo, deduplicating a rule that appears in two sections, reordering for flow, relaxing a threshold so a case passes, or repairing a bug whose easiest fix happens to be a sentence in the prompt. Redundancy and awkward phrasing in an instruction section are frequently load bearing. If the honest fix really is in the prompt, that is a proposal, not a detour.
+
+**Before you commit, check.** If `git status` shows anything under [`core/agent/`](core/agent/) — or a regenerated bundle you can't account for — and you can't point at the sentence where the user asked for it, revert that file.
+
 ### Changing how Riff behaves
 
-Behavior is data. Changing what Riff does is an edit to markdown and JSON, not parallel edits to Swift and TypeScript.
+Behavior is data. Changing what Riff does is an edit to markdown and JSON, not parallel edits to Swift and TypeScript. This is the mechanism; the gate above decides whether you should be making the change at all.
 
 1. **Edit the source, not the bundle.** Instruction sections and tool contracts live in [`core/agent/instructions/`](core/agent/instructions/) and [`core/agent/tools/`](core/agent/tools/). Every file in either directory must be listed in [`agent.json`](core/agent/agent.json) — the builder fails on an unlisted file, a duplicate tool name, a duplicate or out-of-order instruction `order`, and a tool that the `tools` instruction section never mentions.
 2. **Run `npm run bundle`** and commit the regenerated bundle together with the source edit, in the same commit. Never hand-edit a generated copy.
@@ -103,7 +126,7 @@ The review loop is the same every time; run it without being asked.
 
 1. **Open the PR unless told otherwise.** Keep the title and description current as the change evolves — when scope shifts mid-review, update the description so it always describes the PR as it stands.
 2. **Don't assign Copilot as a reviewer yourself** — it is auto-assigned shortly after the PR opens. Wait for that review rather than racing to request it manually.
-3. **Triage review feedback by materiality — you are the bot's editor, not its patch-applier.** For each comment decide whether it affects correctness, security, the PR's stated goal, or the `core/` contract. Fix those. For style nits, speculative suggestions, things already handled, or things a stacked PR owns, reply briefly with why you're declining and resolve the thread. Do not grow the diff to satisfy a non-material comment.
+3. **Triage review feedback by materiality — you are the bot's editor, not its patch-applier.** For each comment decide whether it affects correctness, security, the PR's stated goal, or the `core/` contract. Fix those. For style nits, speculative suggestions, things already handled, or things a stacked PR owns, reply briefly with why you're declining and resolve the thread. Do not grow the diff to satisfy a non-material comment. A comment proposing a reworded instruction section, a renamed tool, or a moved threshold is a proposal about the product no matter how well argued — say the agent definition is out of scope for this PR and resolve the thread, then take it to the user if you think it has merit.
 4. **Reply to and resolve every thread you address**, and every one you decline. Keep replies terse and factual — state what changed or why you're declining, and skip the pleasantries.
 5. **Guard scope and converge.** A PR stays about the thing it opened for; genuinely separate concerns become a follow-up issue or a stacked PR. Treat comments as evidence about an invariant rather than a patch checklist — if successive findings expose the same hole, repair the design once instead of adding one guard per example. "Ready" is a green PR whose *material* threads are resolved, not one with zero comments.
 6. **For review-fix rounds, push before the full gates so review and validation run in parallel.** The initial PR still gets both suites before it opens. After review feedback, make one coherent fix round, run only the smallest targeted check needed to catch an obvious failure, then commit and push promptly. Run `npm test` and the Swift suite on the pushed commit while CI and the bot review the same SHA; never call the PR ready until they pass. Do not gate a push on an extra local code-review pass. Before each push, merge `main` if it moved (or rebase per the stacking rules below), resolve conflicts carefully, and ensure the pushed tree contains every intended fix.
@@ -137,6 +160,9 @@ When a change touches the same files as an in-flight PR, stack it instead of rac
 - Match the surrounding language's conventions — the bindings are deliberately parallel in structure, not in syntax. Don't write Swift that reads like transliterated TypeScript, or the reverse.
 
 ## Documentation & Markdown
+
+> [!IMPORTANT]
+> These rules cover prose — the [README](README.md), [`docs/`](docs/), and this guide. **They do not cover [`core/agent/instructions/`](core/agent/instructions/).** Those files are a system prompt that happens to be written in Markdown: their wrapping, ordering, and wording are agent behavior, so reflowing or copy-editing one is a product change governed by [Changing the agent definition](#changing-the-agent-definition).
 
 - **Don't hard-wrap prose.** Write one line per paragraph or list item and let the renderer wrap it; only break where it's semantically meaningful (between paragraphs, list items, or other block elements). Existing files under [`docs/`](docs/) predate this rule and are still hard-wrapped — leave them alone unless you're already editing the paragraph, rather than reflowing a file as a drive-by.
 - **Reference files and symbols as basename links, not bare inline-code paths.** Write [`grounding.ts`](packages/riff-core/src/grounding.ts), not a bare `` `packages/riff-core/src/grounding.ts` `` — the reader gets a click-through and the prose stays short.
