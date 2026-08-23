@@ -522,3 +522,77 @@ impl RiffStore for StallingStore {
         Box::pin(async { Ok(Vec::new()) })
     }
 }
+
+/// A store that keeps what it is given but can be told to refuse specific writes, for checking
+/// that session state never runs ahead of what was actually persisted.
+#[derive(Default)]
+pub struct FailingStore {
+    motifs: Mutex<Vec<Motif>>,
+    fail_save: bool,
+    fail_retire: bool,
+}
+
+impl FailingStore {
+    /// Refuses every write.
+    pub fn everything() -> Self {
+        Self {
+            fail_save: true,
+            fail_retire: true,
+            ..Self::default()
+        }
+    }
+
+    /// Accepts a motif but refuses to retire one, so a retirement can be attempted against a motif
+    /// that genuinely exists.
+    pub fn only_retire() -> Self {
+        Self {
+            fail_retire: true,
+            ..Self::default()
+        }
+    }
+}
+
+impl RiffStore for FailingStore {
+    fn load_lexicon(&self) -> BoxFuture<'_, HostResult<Vec<LexiconTerm>>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    fn save_term(&self, _term: LexiconTerm) -> BoxFuture<'_, HostResult<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn list_motifs(&self) -> BoxFuture<'_, HostResult<Vec<Motif>>> {
+        let motifs = self
+            .motifs
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        Box::pin(async move { Ok(motifs) })
+    }
+
+    fn save_motif(&self, motif: Motif) -> BoxFuture<'_, HostResult<()>> {
+        if self.fail_save {
+            return Box::pin(async { Err("the store is unreachable".into()) });
+        }
+        self.motifs
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(motif);
+        Box::pin(async { Ok(()) })
+    }
+
+    fn retire_motif(&self, _id: String, _at: String) -> BoxFuture<'_, HostResult<()>> {
+        if self.fail_retire {
+            return Box::pin(async { Err("the store is unreachable".into()) });
+        }
+        Box::pin(async { Ok(()) })
+    }
+
+    fn save_artifact(&self, _artifact: PromptArtifact) -> BoxFuture<'_, HostResult<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn list_artifacts(&self, _limit: usize) -> BoxFuture<'_, HostResult<Vec<PromptArtifact>>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+}

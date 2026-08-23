@@ -13,7 +13,8 @@ use riff_core::{
     RiffSession, RiffSessionOptions, SessionState, SystemClock, TakeStatus, json_object,
 };
 use support::{
-    Call, FakeProvider, InstantClock, RecordingHost, StalledHost, StallingStore, block_on,
+    Call, FailingStore, FakeProvider, InstantClock, RecordingHost, StalledHost, StallingStore,
+    block_on,
 };
 
 struct Harness {
@@ -32,13 +33,30 @@ impl Harness {
     }
 
     fn with(host: Arc<RecordingHost>, clock: Arc<dyn riff_core::Clock>) -> Harness {
+        Harness::build(host, clock, None)
+    }
+
+    /// A harness whose store is not the in-memory one, for the paths where persistence fails.
+    fn with_store(store: Arc<dyn riff_core::RiffStore>) -> Harness {
+        Harness::build(
+            Arc::new(RecordingHost::default()),
+            Arc::new(SystemClock::new()),
+            Some(store),
+        )
+    }
+
+    fn build(
+        host: Arc<RecordingHost>,
+        clock: Arc<dyn riff_core::Clock>,
+        override_store: Option<Arc<dyn riff_core::RiffStore>>,
+    ) -> Harness {
         let provider = Arc::new(FakeProvider::default());
         let store = Arc::new(MemoryStore::default());
         let bundle = Arc::new(AgentBundle::bundled().expect("the vendored bundle must load"));
 
         let mut options = RiffSessionOptions::new(bundle, provider.clone());
         options.host = host.clone();
-        options.store = store.clone();
+        options.store = override_store.unwrap_or_else(|| store.clone());
         options.clock = clock;
 
         let mut session = RiffSession::new(options);
@@ -1151,4 +1169,156 @@ fn restarting_after_a_terminal_fault_gets_a_fresh_connection() {
         "a restart has to negotiate a new connection, not resume the dead one"
     );
     assert!(first.calls().contains(&Call::Close));
+}
+
+#[test]
+fn hands_out_a_reference_id_that_still_means_the_same_thing_later() {
+    // The ids are what `attach_context` names, so one that changes what it points at between being
+    // reported and being attached puts the wrong thing in the prompt's context.
+    let mut harness = Harness::start();
+
+    let anonymous = |title: &str| ContextItem {
+        reference_id: String::new(),
+        kind: "pull_request".to_owned(),
+        title: title.to_owned(),
+        ..ContextItem::default()
+    };
+
+    harness
+        .host
+        .set_candidates(vec![anonymous("first"), anonymous("second")]);
+    let one = harness.call(
+        "resolve_reference",
+        Json::Object(json_object! { "phrase" => "the PRs I opened" }),
+    );
+
+    harness
+        .host
+        .set_candidates(vec![anonymous("third"), anonymous("fourth")]);
+    let two = harness.call(
+        "resolve_reference",
+        Json::Object(json_object! { "phrase" => "the other ones" }),
+    );
+
+    let ids = |result: &Json| -> Vec<String> {
+        result
+            .get("candidates")
+            .map(Json::array_or_empty)
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|entry| entry.get_str("reference_id").map(str::to_owned))
+            .collect()
+    };
+
+    let mut all = ids(&one);
+    all.extend(ids(&two));
+    let unique: std::collections::HashSet<&String> = all.iter().collect();
+    assert_eq!(unique.len(), all.len(), "ids collided: {all:?}");
+
+    // The first batch's ids still resolve to the first batch's items.
+    harness.say("the uploader keeps dying");
+    harness.call("draft_update", upsert("intent", "the uploader keeps dying"));
+    harness.call(
+        "draft_update",
+        Json::Object(json_object! {
+            "operations" => vec![Json::Object(json_object! {
+                "op" => "attach_context",
+                "reference_id" => all[1].clone(),
+            })],
+        }),
+    );
+
+    let artifact = harness.session.artifact().expect("a take is active");
+    assert_eq!(artifact.context.len(), 1);
+    assert_eq!(
+        artifact.context[0].title, "second",
+        "the id no longer names what it named when it was reported"
+    );
+}
+
+#[test]
+fn does_not_report_a_motif_saved_that_the_store_refused() {
+    let mut harness = Harness::with_store(Arc::new(FailingStore::everything()));
+    harness.say("always add tests");
+
+    let result = harness.call(
+        "motifs",
+        Json::Object(json_object! { "action" => "save", "text" => "always add tests" }),
+    );
+    assert!(result.get_str("error").is_some(), "got {result:?}");
+
+    // A motif the store never took must not be offered as though it had been kept.
+    let listed = harness.call("motifs", Json::Object(json_object! { "action" => "list" }));
+    assert_eq!(
+        listed.get("motifs").map(|m| m.array_or_empty().len()),
+        Some(0),
+        "a motif that was not persisted is still live in this session"
+    );
+}
+
+#[test]
+fn does_not_retire_a_motif_the_store_refused_to_retire() {
+    // The store takes the motif but refuses to retire it.
+    let mut harness = Harness::with_store(Arc::new(FailingStore::only_retire()));
+    harness.say("always add tests");
+    let saved = harness.call(
+        "motifs",
+        Json::Object(json_object! { "action" => "save", "text" => "always add tests" }),
+    );
+    let id = saved.get_str("motif_id").expect("saved").to_owned();
+
+    let result = harness.call(
+        "motifs",
+        Json::Object(json_object! { "action" => "retire", "motif_id" => id }),
+    );
+    assert!(result.get_str("error").is_some(), "got {result:?}");
+
+    let listed = harness.call("motifs", Json::Object(json_object! { "action" => "list" }));
+    assert_eq!(
+        listed.get("motifs").map(|m| m.array_or_empty().len()),
+        Some(1),
+        "the motif vanished from the session while the store still holds it"
+    );
+}
+
+#[test]
+fn a_stalled_send_leaves_the_take_where_the_speaker_left_it() {
+    // The deadline drops the handler mid-send. Nothing went, so the take has to read as though
+    // nothing went — `ready` would say a submission is in flight that never happened.
+    let provider = Arc::new(FakeProvider::default());
+    let bundle = Arc::new(AgentBundle::bundled().expect("the vendored bundle must load"));
+    let mut options = RiffSessionOptions::new(bundle, provider.clone());
+    options.host = Arc::new(StalledHost);
+    options.clock = Arc::new(InstantClock::up_to(60_000));
+
+    let mut session = RiffSession::new(options);
+    block_on(session.start()).expect("connects");
+
+    provider.connection().say("fix the flaky test");
+    block_on(session.step());
+    provider
+        .connection()
+        .call_tool("draft_update", upsert("intent", "fix the flaky test"));
+    block_on(session.step());
+
+    let id = provider
+        .connection()
+        .call_tool("submit_prompt", Json::object());
+    block_on(session.step());
+
+    let result = provider.connection().result_for(&id);
+    assert!(
+        result
+            .get_str("error")
+            .is_some_and(|error| error.contains("did not answer")),
+        "got {result:?}"
+    );
+
+    let take = &session.takes()[0];
+    assert_eq!(take.status, TakeStatus::Drafting);
+    assert_eq!(
+        session.runtime.book.active_id(),
+        Some("t1"),
+        "and it is still the take being spoken into"
+    );
 }

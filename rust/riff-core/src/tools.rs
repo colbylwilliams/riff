@@ -164,6 +164,19 @@ impl ToolRuntime {
         }
     }
 
+    /// A reference id no resolved reference is using.
+    ///
+    /// Counting is not enough: the count grows as a batch is stored, so offsetting it by the batch
+    /// index skips ids and then collides with a skipped one on the next call. An id that changes
+    /// what it points at between being reported and being attached puts the wrong thing in the
+    /// prompt's context.
+    fn next_reference_id(&self) -> String {
+        (1..)
+            .map(|n| format!("r{n}"))
+            .find(|id| !self.references.contains_key(id))
+            .expect("the range is unbounded")
+    }
+
     fn render(&self) -> RenderOptions<'_> {
         RenderOptions {
             config: &self.bundle.render,
@@ -439,9 +452,9 @@ impl ToolRuntime {
             .await?;
 
         let mut reported = Vec::new();
-        for (index, candidate) in candidates.into_iter().enumerate() {
+        for candidate in candidates {
             let reference_id = if candidate.reference_id.is_empty() {
-                format!("r{}", self.references.len() + index + 1)
+                self.next_reference_id()
             } else {
                 candidate.reference_id.clone()
             };
@@ -699,9 +712,12 @@ impl ToolRuntime {
                     created_at: self.clock.now(),
                     retired_at: None,
                 };
-                self.motifs.insert(motif.id.clone(), motif.clone());
+                // Persisted before the session believes it. A store that fails, or a deadline that
+                // drops this handler, would otherwise leave a motif that `list` and `attach` treat
+                // as saved and that no later session has ever heard of.
                 let id = motif.id.clone();
-                self.store.save_motif(motif).await?;
+                self.store.save_motif(motif.clone()).await?;
+                self.motifs.insert(id.clone(), motif);
                 Ok(Json::Object(
                     json_object! { "saved" => true, "motif_id" => id },
                 ))
@@ -795,12 +811,16 @@ impl ToolRuntime {
             "retire" => {
                 let id = motif_id.ok_or_else(|| RiffError::tool("retire needs motif_id"))?;
                 let at = self.clock.now();
-                let motif = self
-                    .motifs
-                    .get_mut(&id)
-                    .ok_or_else(|| RiffError::tool(format!("no motif \"{id}\"")))?;
-                motif.retired_at = Some(at.clone());
-                self.store.retire_motif(id, at).await?;
+                if !self.motifs.contains_key(&id) {
+                    return Err(RiffError::tool(format!("no motif \"{id}\"")));
+                }
+                // Same ordering as `save`, for the same reason: a motif that vanished from this
+                // session while the store still has it would come back on the next one, having
+                // been reported as retired.
+                self.store.retire_motif(id.clone(), at.clone()).await?;
+                if let Some(motif) = self.motifs.get_mut(&id) {
+                    motif.retired_at = Some(at);
+                }
                 Ok(Json::Object(json_object! { "retired" => true }))
             }
 
@@ -926,10 +946,14 @@ impl ToolRuntime {
             if let Some(target) = &target {
                 take.target = Some(target.clone());
             }
-            take.status = TakeStatus::Ready;
         }
 
-        let artifact = self.artifact_for(self.book.get(&take_id).expect("take exists"))?;
+        // The take stays `drafting` across the await, and only the artifact the host receives is
+        // marked `ready`. Moving the take first would strand it there when this handler is dropped
+        // at its deadline: nothing was sent, but the take would read as though it had been.
+        let mut artifact = self.artifact_for(self.book.get(&take_id).expect("take exists"))?;
+        artifact.status = Some(TakeStatus::Ready);
+
         let result = self
             .host
             .submit_prompt(
@@ -943,16 +967,12 @@ impl ToolRuntime {
 
         let result = match result {
             Ok(result) => result,
-            Err(error) => {
-                // The dispatcher turns this into a tool error, so the status has to be put back here
-                // or the take stays `ready` for a submission that never happened.
-                self.book.get_mut(&take_id).expect("take exists").status = TakeStatus::Drafting;
-                return Err(error.into());
-            }
+            // No rollback needed: the take was never moved, so a failure leaves it exactly as the
+            // speaker left it — including parked, which a failed send has no business changing.
+            Err(error) => return Err(error.into()),
         };
 
         if !result.submitted {
-            self.book.get_mut(&take_id).expect("take exists").status = TakeStatus::Drafting;
             return Ok(submit_report(&result, &artifact.id, None));
         }
 
