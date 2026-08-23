@@ -59,6 +59,9 @@ class FakeWebSocket implements WebSocketLike {
   }
 }
 
+/** Enough turns of the loop that exhausting it means something is wrong, not merely slow. */
+const DELIVERY_ATTEMPTS = 1000;
+
 /**
  * Resolves once the factory has produced a socket and its open event has fired.
  *
@@ -66,7 +69,7 @@ class FakeWebSocket implements WebSocketLike {
  * timer that opens the fake socket.
  */
 async function openedSocket(get: () => FakeWebSocket | null): Promise<FakeWebSocket> {
-  for (let attempt = 0; attempt < 1000; attempt += 1) {
+  for (let attempt = 0; attempt < DELIVERY_ATTEMPTS; attempt += 1) {
     const socket = get();
     if (socket && socket.readyState === 1) return socket;
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -103,9 +106,18 @@ async function settleWith<T>(
   // The caller decides whether a rejection is the expected outcome.
   tracked.catch(() => {});
 
-  for (let attempt = 0; pending && attempt < 1000; attempt += 1) {
+  for (let attempt = 0; pending && attempt < DELIVERY_ATTEMPTS; attempt += 1) {
     get()?.receive(message);
     await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  // Handing back a promise that is still pending would rebuild the failure this helper exists to
+  // prevent — the unref'd handshake timer lets the process exit around it, and the runner reports
+  // a cancelled test with no cause. Fail here instead, where the cause is still in hand.
+  if (pending) {
+    throw new Error(
+      `connect did not settle after ${DELIVERY_ATTEMPTS} deliveries of ${JSON.stringify(message)}`,
+    );
   }
   return tracked;
 }
