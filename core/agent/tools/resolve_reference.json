@@ -49,7 +49,7 @@
   },
   "returns": {
     "type": "object",
-    "description": "candidates[] each with reference_id, kind, title, identifier, url, timestamp, actor, and confidence. An empty list means ask.",
+    "description": "candidates[] each with reference_id, kind, title, identifier, url, timestamp, actor, and confidence. An empty list means ask, once. If it is still empty after they answer, leave the reference unresolved and move on — never ask again, and never attach a candidate you are not confident in.",
     "properties": {
       "candidates": { "type": "array", "items": { "type": "object" } }
     }
