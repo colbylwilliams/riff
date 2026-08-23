@@ -381,6 +381,9 @@ function send(response, status, extension, body) {
   response.writeHead(status, {
     "Content-Type": CONTENT_TYPES[extension] ?? "application/octet-stream",
     "Cache-Control": "no-store",
+    // The origin check passes for a POST made from inside a frame, because the framed page is this
+    // one. Refusing to be framed is what stops a foreign site driving these controls over the top.
+    "Content-Security-Policy": "frame-ancestors 'none'",
   });
   response.end(body);
 }
