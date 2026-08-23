@@ -5,9 +5,13 @@
 //! acquires on their behalf. Everything above this line — the session shape, the event mapping — is
 //! the same whichever socket they bring.
 
+use std::fmt;
 use std::sync::Arc;
 
 use riff_core::{BoxFuture, Json, ProviderFault};
+
+/// What a credential is written as when something formats it.
+pub(crate) const REDACTED: &str = "[redacted]";
 
 /// Which transport a connection is running over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,12 +86,27 @@ pub enum CredentialKind {
 }
 
 /// A token and what sort of token it is.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Credential {
     /// The bearer token.
     pub token: String,
     /// What sort it is.
     pub kind: CredentialKind,
+}
+
+/// Written without the token.
+///
+/// `Debug` is where a credential leaks: a transport that traces its own request, or an embedder
+/// logging an error, would otherwise put a bearer token in a log file. The kind is what is worth
+/// seeing there anyway.
+impl fmt::Debug for Credential {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Credential")
+            .field("token", &REDACTED)
+            .field("kind", &self.kind)
+            .finish()
+    }
 }
 
 /// Supplies the token a connection opens with.
@@ -101,9 +120,19 @@ pub trait CredentialProvider: Send + Sync {
 /// An API key on a phone or in a browser is a key you have published, so clients mint a short-lived
 /// client secret instead — see [`crate::client_secret_request`]. The type is named to make the
 /// difference impossible to miss at a call site.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ApiKeyCredentials {
     key: String,
+}
+
+/// Written without the key. See [`Credential`]'s implementation.
+impl fmt::Debug for ApiKeyCredentials {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ApiKeyCredentials")
+            .field("key", &REDACTED)
+            .finish()
+    }
 }
 
 impl ApiKeyCredentials {
@@ -179,14 +208,39 @@ pub fn decode_base64(value: &str) -> Vec<u8> {
     out
 }
 
-/// Adds the model to an endpoint without disturbing what is already there.
+/// Sets the model on an endpoint without disturbing what is already there.
 ///
 /// Azure and gateway endpoints carry required parameters such as `api-version` and `deployment`.
 /// Appending `?model=` to those produces a second `?` and folds the model into the previous value,
-/// which fails in a way that looks like an auth problem.
+/// which fails in a way that looks like an auth problem. An endpoint that already names a model gets
+/// that value replaced rather than duplicated — a server reading the first of two would otherwise
+/// negotiate a model this binding did not ask for.
 pub fn endpoint_with_model(base: &str, model: &str) -> String {
-    let separator = if base.contains('?') { '&' } else { '?' };
-    format!("{base}{separator}model={}", percent_encode(model))
+    let (without_fragment, fragment) = match base.split_once('#') {
+        Some((head, fragment)) => (head, Some(fragment)),
+        None => (base, None),
+    };
+    let (path, query) = match without_fragment.split_once('?') {
+        Some((path, query)) => (path, Some(query)),
+        None => (without_fragment, None),
+    };
+
+    let mut parameters: Vec<String> = query
+        .into_iter()
+        .flat_map(|query| query.split('&'))
+        .filter(|parameter| {
+            !parameter.is_empty() && !matches!(parameter.split_once('='), Some(("model", _)))
+        })
+        .map(str::to_owned)
+        .collect();
+    parameters.push(format!("model={}", percent_encode(model)));
+
+    let mut out = format!("{path}?{}", parameters.join("&"));
+    if let Some(fragment) = fragment {
+        out.push('#');
+        out.push_str(fragment);
+    }
+    out
 }
 
 /// Percent-encodes everything outside the unreserved set, which is enough for a model name.

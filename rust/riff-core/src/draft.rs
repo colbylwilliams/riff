@@ -850,7 +850,7 @@ impl DraftBook {
         Ok(Some(&self.takes[index]))
     }
 
-    /// Sets a take aside so it can be come back to.
+    /// Sets a take aside so it can be picked up again.
     pub fn park(&mut self, id: &str) -> Result<bool> {
         let Some(index) = self.takes.iter().position(|take| take.id == id) else {
             return Ok(false);

@@ -497,6 +497,15 @@ impl Parser<'_> {
                         if byte == b'"' || byte == b'\\' {
                             break;
                         }
+                        // JSON requires a control character to be escaped, and both other bindings
+                        // parse with a library that enforces it. Copying one through would make the
+                        // same malformed tool call succeed here and fail there.
+                        if byte < 0x20 {
+                            return Err(format!(
+                                "unescaped control character U+{byte:04X} in a string at byte {}",
+                                self.at
+                            ));
+                        }
                         self.at += 1;
                     }
                     out.push_str(
@@ -595,5 +604,14 @@ mod tests {
     fn rejects_malformed_arguments() {
         assert!(Json::parse("{\"a\":").is_err());
         assert!(Json::parse("{}{}").is_err());
+    }
+
+    #[test]
+    fn rejects_a_control_character_a_string_should_have_escaped() {
+        // Both other bindings parse with a library that enforces this, so accepting it would make
+        // the same malformed tool call succeed here and fail there.
+        assert!(Json::parse("\"a\nb\"").is_err());
+        assert!(Json::parse("{\"k\":\"v\u{1}\"}").is_err());
+        assert_eq!(Json::parse(r#""a\nb""#).unwrap().as_str(), Some("a\nb"));
     }
 }

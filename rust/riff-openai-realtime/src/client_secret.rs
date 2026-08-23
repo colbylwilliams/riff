@@ -7,9 +7,12 @@
 //! crate stays free of an HTTP client the embedder did not choose — and so the API key stays in code
 //! you control rather than being handed to a library.
 
+use std::fmt;
+
 use riff_core::{Json, ProviderFault, SessionDefaults, ToolDefinition};
 
 use crate::session_config::{BuildSessionOptions, build_openai_session};
+use crate::transport::REDACTED;
 
 /// The default OpenAI API root.
 pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
@@ -37,7 +40,7 @@ pub struct MintClientSecretOptions<'a> {
 }
 
 /// An HTTP request for the embedder to make.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ClientSecretRequest {
     /// Where to POST.
     pub url: String,
@@ -47,13 +50,46 @@ pub struct ClientSecretRequest {
     pub body: String,
 }
 
+/// Written with header names but not their values, and the body by length.
+///
+/// One of those headers carries the durable API key. Tracing a failed mint is exactly when someone
+/// reaches for `{:?}`, which is exactly when the key would reach a log.
+impl fmt::Debug for ClientSecretRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ClientSecretRequest")
+            .field("url", &self.url)
+            .field(
+                "headers",
+                &self
+                    .headers
+                    .iter()
+                    .map(|(name, _)| name)
+                    .collect::<Vec<_>>(),
+            )
+            .field("body_bytes", &self.body.len())
+            .finish()
+    }
+}
+
 /// A short-lived secret a device may connect with.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ClientSecret {
     /// The token.
     pub value: String,
     /// When it stops working, as a Unix timestamp, when the API said.
     pub expires_at: Option<i64>,
+}
+
+/// Written without the value. Short-lived is not the same as harmless: it is still a bearer token.
+impl fmt::Debug for ClientSecret {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ClientSecret")
+            .field("value", &REDACTED)
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
 }
 
 /// Builds the request that mints a client secret.
@@ -179,6 +215,34 @@ mod tests {
         );
         // The key travels in the header, never in the body.
         assert!(!request.body.contains("sk-test"));
+    }
+
+    #[test]
+    fn keeps_credentials_out_of_diagnostic_output() {
+        let bundle = AgentBundle::bundled().unwrap();
+        let request = client_secret_request(&MintClientSecretOptions {
+            api_key: "sk-super-secret",
+            session: &bundle.session,
+            instructions: "",
+            tools: &[],
+            vocabulary: &[],
+            model: None,
+            expires_in_seconds: None,
+            base_url: None,
+            safety_identifier: None,
+        });
+        let rendered = format!("{request:?}");
+        assert!(!rendered.contains("sk-super-secret"), "{rendered}");
+        assert!(
+            rendered.contains("Authorization"),
+            "the header is still named"
+        );
+
+        let secret = ClientSecret {
+            value: "ek_super_secret".to_owned(),
+            expires_at: Some(123),
+        };
+        assert!(!format!("{secret:?}").contains("ek_super_secret"));
     }
 
     #[test]

@@ -366,7 +366,7 @@ pub enum TakeStatus {
     Ready,
     /// Sent. Terminal.
     Submitted,
-    /// Set aside, and can be come back to.
+    /// Set aside, to be picked up again.
     Parked,
     /// Thrown away. Terminal.
     Discarded,

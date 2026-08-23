@@ -269,7 +269,12 @@ impl RiffSession {
             self.runtime.motifs.insert(motif.id.clone(), motif);
         }
 
-        let environment = self.host.environment().await.unwrap_or_default();
+        // Propagated rather than defaulted, matching the TypeScript binding: a host that cannot
+        // answer this is a host that will not resolve a reference either, and a session that starts
+        // without knowing the repository or its destinations fails later, mid-conversation, in a way
+        // the speaker cannot make sense of. `RiffHost::environment` defaults to empty, so only a
+        // host that implements it and then fails ends up here.
+        let environment = self.host.environment().await.map_err(failed)?;
         for term in &environment.vocabulary {
             self.runtime.lexicon.add(term.clone());
         }
@@ -329,26 +334,50 @@ impl RiffSession {
             self.warning_timer = Some(self.clock.sleep(delay_ms));
         }
 
+        // The timer is raced first because `race` stops at the first ready future: with the event
+        // stream ahead of it, a session busy enough to matter — continuous audio — would keep an
+        // event ready on every poll and the warning would never be reached.
         let mut timer = self.warning_timer.take();
         let outcome = match timer.as_mut() {
-            None => Either::Left(connection.next_event().await),
-            Some(timer) => race(connection.next_event(), timer).await,
+            None => Either::Right(connection.next_event().await),
+            Some(timer) => race(timer, connection.next_event()).await,
         };
 
         match outcome {
-            Either::Left(event) => {
-                self.warning_timer = timer;
-                let Some(event) = event else { return false };
-                self.handle(event).await;
-                true
-            }
-            Either::Right(()) => {
+            Either::Left(()) => {
                 if let Some(seconds_remaining) = self.pending_warnings.pop() {
                     self.emit(RiffEvent::Expiring { seconds_remaining });
                 }
                 true
             }
+            Either::Right(event) => {
+                self.warning_timer = timer;
+                match event {
+                    Some(event) => {
+                        self.handle(event).await;
+                        true
+                    }
+                    None => {
+                        // A provider whose stream ends without a closing event has still closed.
+                        // Returning without saying so would leave `run` finished, the state reading
+                        // `listening`, and a dead connection in hand.
+                        self.close("the provider stopped sending events");
+                        false
+                    }
+                }
+            }
         }
+    }
+
+    /// Records that the connection is gone, whether the provider said so or simply stopped.
+    fn close(&mut self, reason: impl Into<String>) {
+        self.connection = None;
+        self.pending_warnings.clear();
+        self.warning_timer = None;
+        self.set_state(SessionState::Closed);
+        self.emit(RiffEvent::Closed {
+            reason: Some(reason.into()),
+        });
     }
 
     /// How long until the next expiry warning is due.
@@ -515,6 +544,8 @@ impl RiffSession {
 
             ProviderEvent::Closed { reason } => {
                 self.connection = None;
+                self.pending_warnings.clear();
+                self.warning_timer = None;
                 self.set_state(SessionState::Closed);
                 self.emit(RiffEvent::Closed { reason });
             }

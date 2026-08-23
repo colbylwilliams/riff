@@ -40,15 +40,27 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
     }
 }
 
-/// A clock whose delays resolve immediately, so a deadline can be observed without waiting for it.
+/// A clock that brings some delays forward to now, so a deadline can be observed without waiting.
+///
+/// The cutoff matters: a session runs two timers of very different magnitudes — a tool call has
+/// seconds and the session expiry has most of an hour — and collapsing both makes the expiry
+/// warning win every race. `up_to` keeps them apart.
 pub struct InstantClock {
     inner: SystemClock,
+    instant_up_to_ms: u64,
 }
 
 impl InstantClock {
+    /// Every delay resolves immediately.
     pub fn new() -> Self {
+        Self::up_to(u64::MAX)
+    }
+
+    /// Delays of at most `milliseconds` resolve immediately; longer ones never arrive.
+    pub fn up_to(milliseconds: u64) -> Self {
         Self {
             inner: SystemClock::new(),
+            instant_up_to_ms: milliseconds,
         }
     }
 }
@@ -62,8 +74,12 @@ impl Clock for InstantClock {
         self.inner.monotonic_ms()
     }
 
-    fn sleep(&self, _milliseconds: u64) -> BoxFuture<'static, ()> {
-        Box::pin(std::future::ready(()))
+    fn sleep(&self, milliseconds: u64) -> BoxFuture<'static, ()> {
+        if milliseconds <= self.instant_up_to_ms {
+            Box::pin(std::future::ready(()))
+        } else {
+            Box::pin(std::future::pending())
+        }
     }
 }
 
@@ -155,6 +171,16 @@ impl FakeConnection {
             })
             .map(|json| Json::parse(&json).expect("tool results are JSON"))
             .unwrap_or_else(|| panic!("no tool result was sent for {call_id}"))
+    }
+
+    /// Ends the event stream the way a transport that simply stops does: no closing event, no
+    /// `close()` call, just nothing more to read.
+    pub fn finish(&self) {
+        let mut state = self.lock();
+        state.closed = true;
+        if let Some(waker) = state.waker.take() {
+            waker.wake();
+        }
     }
 
     fn record(&self, call: Call) {
@@ -322,6 +348,7 @@ struct HostState {
     submitted: Vec<PromptArtifact>,
     environment: HostEnvironment,
     refuse_submission: bool,
+    fail_environment: bool,
 }
 
 impl RecordingHost {
@@ -347,6 +374,11 @@ impl RecordingHost {
     /// Makes the host refuse to send, as one whose destination is unreachable would.
     pub fn refuse_submission(&self) {
         self.lock().refuse_submission = true;
+    }
+
+    /// Makes the host unable to say what the speaker's world contains.
+    pub fn fail_environment(&self) {
+        self.lock().fail_environment = true;
     }
 
     /// Every prompt the host was handed.
@@ -413,7 +445,11 @@ impl RiffHost for RecordingHost {
     }
 
     fn environment(&self) -> BoxFuture<'_, HostResult<HostEnvironment>> {
-        let environment = self.lock().environment.clone();
+        let state = self.lock();
+        if state.fail_environment {
+            return Box::pin(async { Err("the workspace service is unreachable".into()) });
+        }
+        let environment = state.environment.clone();
         Box::pin(async move { Ok(environment) })
     }
 }

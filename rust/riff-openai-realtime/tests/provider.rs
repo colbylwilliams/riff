@@ -218,6 +218,10 @@ impl FakeTransport {
         self.lock().sent.clone()
     }
 
+    fn queued(&self) -> usize {
+        self.lock().incoming.len()
+    }
+
     fn sent_types(&self) -> Vec<String> {
         self.sent()
             .iter()
@@ -510,9 +514,10 @@ fn bounds_the_whole_handshake_rather_than_the_gap_between_messages() {
         request: Mutex::new(None),
     });
 
-    // A chatty endpoint that never says `session.created`. A deadline recreated per message would
-    // never fire, and `connect` would stay pending forever.
-    for _ in 0..4 {
+    // A chatty endpoint that never says `session.created`. Two ways this hangs: a deadline rebuilt
+    // per message never accumulates, and a deadline raced behind a stream that is always ready is
+    // never polled at all.
+    for _ in 0..64 {
         transport.deliver(TransportMessage::Event(Json::Object(
             json_object! { "type" => "rate_limits.updated" },
         )));
@@ -535,4 +540,9 @@ fn bounds_the_whole_handshake_rather_than_the_gap_between_messages() {
 
     assert_eq!(fault.code, "handshake_failed");
     assert!(fault.message.contains("timed out"), "got {}", fault.message);
+    assert_eq!(
+        transport.queued(),
+        64,
+        "an elapsed deadline wins before another message is read"
+    );
 }

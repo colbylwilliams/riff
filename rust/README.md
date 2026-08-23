@@ -37,7 +37,7 @@ session.run().await;
 
 ## Conventions
 
-- **No third-party dependencies, in either crate.** `riff-core` has none and `riff-openai-realtime` depends only on `riff-core`, so [`Cargo.lock`](Cargo.lock) is three packages long. JSON, text normalization, base64, RFC 3339 formatting, and the deadline primitive are written against the standard library. A dependency here is a dependency the embedder did not choose; adding one needs a stated reason in the PR.
+- **No third-party dependencies, in either crate.** `riff-core` has none and `riff-openai-realtime` depends only on `riff-core`, so [`Cargo.lock`](Cargo.lock) names two packages and nothing else. JSON, text normalization, base64, RFC 3339 formatting, and the deadline primitive are written against the standard library. A dependency here is a dependency the embedder did not choose; adding one needs a stated reason in the PR.
 - **`unsafe` is forbidden**, by a workspace lint rather than by convention.
 - **Everything public is documented**, by `missing_docs`.
 - **`cargo fmt` and `cargo clippy -D warnings` gate CI.** Unlike the TypeScript and Swift halves of this repo, Rust has one canonical formatter and linter, so the binding is held to them.

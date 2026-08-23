@@ -165,7 +165,12 @@ pub enum Either<A, B> {
     Right(B),
 }
 
-/// Polls two futures and yields whichever finishes first, preferring the first on a tie.
+/// Polls two futures and yields whichever finishes first.
+///
+/// `first` is polled first and wins a tie — and, more importantly, `second` is not polled at all
+/// while `first` is ready. So the future that must not be starved goes first: a deadline racing a
+/// stream of work belongs on the left, or a stream that is continuously ready keeps the deadline
+/// from ever being reached. [`with_deadline`] is the exception, and says why.
 ///
 /// Both futures must be [`Unpin`], which every [`BoxFuture`] is. Wrap an `async` block in
 /// [`Box::pin`] to race one.
@@ -200,6 +205,10 @@ impl<A: Future + Unpin, B: Future + Unpin> Future for Race<A, B> {
 /// A host that never returns would otherwise hold the whole batch open, and the single continuation
 /// the model is waiting for would never be requested — the conversation just stops. A timeout is a
 /// result the model can act on; silence is not.
+///
+/// The operation is raced first, unlike the streaming deadlines elsewhere: it resolves at most once,
+/// so it cannot starve the timer, and work that finished on the same poll the deadline expired is
+/// worth more than an error about it.
 ///
 /// The abandoned operation is dropped rather than waited on, which in Rust cancels it at its next
 /// suspension point. A host doing work that has a side effect the speaker can see must still make it

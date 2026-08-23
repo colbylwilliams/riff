@@ -843,7 +843,8 @@ fn tells_the_model_a_host_did_not_answer_rather_than_stalling_the_turn() {
     let bundle = Arc::new(AgentBundle::bundled().expect("the vendored bundle must load"));
     let mut options = RiffSessionOptions::new(bundle, provider.clone());
     options.host = Arc::new(StalledHost);
-    options.clock = Arc::new(InstantClock::new());
+    // The tool deadline fires; the session expiry, an hour out, does not.
+    options.clock = Arc::new(InstantClock::up_to(60_000));
 
     let mut session = RiffSession::new(options);
     block_on(session.start()).expect("connects");
@@ -934,7 +935,7 @@ fn a_deadline_cannot_erase_the_record_that_a_prompt_was_already_sent() {
     let mut options = RiffSessionOptions::new(bundle, provider.clone());
     options.host = host.clone();
     options.store = Arc::new(StallingStore);
-    options.clock = Arc::new(InstantClock::new());
+    options.clock = Arc::new(InstantClock::up_to(60_000));
 
     let mut session = RiffSession::new(options);
     block_on(session.start()).expect("connects");
@@ -981,4 +982,82 @@ fn a_deadline_cannot_erase_the_record_that_a_prompt_was_already_sent() {
         session.runtime.book.active_id().is_none(),
         "a sent take must not stay active"
     );
+}
+
+#[test]
+fn warns_even_while_the_provider_keeps_sending() {
+    // `race` stops at the first ready future. With the event stream polled first, a session busy
+    // enough for the warning to matter — continuous audio — would keep an event ready on every poll
+    // and never reach the deadline.
+    let mut harness = Harness::with(
+        Arc::new(RecordingHost::default()),
+        Arc::new(InstantClock::new()),
+    );
+    let warnings = Arc::new(std::sync::Mutex::new(Vec::<u64>::new()));
+    let sink = warnings.clone();
+    harness.session.on(Box::new(move |event| {
+        if let RiffEvent::Expiring { seconds_remaining } = event {
+            sink.lock().unwrap().push(*seconds_remaining);
+        }
+    }));
+
+    for _ in 0..8 {
+        harness.provider.connection().say("still talking");
+    }
+
+    harness.step();
+    assert_eq!(
+        *warnings.lock().unwrap(),
+        [300],
+        "the warning has to win against a queue that is never empty"
+    );
+}
+
+#[test]
+fn treats_a_stream_that_simply_ends_as_a_close() {
+    let mut harness = Harness::start();
+    let closed = Arc::new(std::sync::Mutex::new(false));
+    let sink = closed.clone();
+    harness.session.on(Box::new(move |event| {
+        if matches!(event, RiffEvent::Closed { .. }) {
+            *sink.lock().unwrap() = true;
+        }
+    }));
+
+    // A provider whose transport drops may never send a closing event.
+    harness.provider.connection().finish();
+
+    assert!(!block_on(harness.session.step()), "the pump has to stop");
+    assert_eq!(harness.session.state(), SessionState::Closed);
+    assert!(*closed.lock().unwrap(), "and say so");
+    assert!(
+        harness.session.session_id().is_none(),
+        "with no stale connection left"
+    );
+}
+
+#[test]
+fn refuses_to_start_when_the_host_cannot_say_what_the_world_contains() {
+    // Starting anyway would give the speaker an agent that cannot resolve "the PR I just opened"
+    // and has nowhere to send anything, with nothing to explain why.
+    let provider = Arc::new(FakeProvider::default());
+    let host = Arc::new(RecordingHost::default());
+    host.fail_environment();
+
+    let bundle = Arc::new(AgentBundle::bundled().expect("the vendored bundle must load"));
+    let mut options = RiffSessionOptions::new(bundle, provider);
+    options.host = host;
+
+    let mut session = RiffSession::new(options);
+    let Err(fault) = block_on(session.start()) else {
+        panic!("a host that cannot answer must fail the connect");
+    };
+
+    assert_eq!(fault.code, "connect_failed");
+    assert!(
+        fault.message.contains("unreachable"),
+        "got {}",
+        fault.message
+    );
+    assert_eq!(session.state(), SessionState::Failed);
 }
