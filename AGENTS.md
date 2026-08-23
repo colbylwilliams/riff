@@ -54,11 +54,11 @@ cargo test --manifest-path rust/Cargo.toml    # and again, natively
 > [!IMPORTANT]
 > **The Swift suite needs macOS.** `RiffAudio` imports `AVFoundation` unguarded, so the package does not build on Linux — [CI](.github/workflows/ci.yml) runs it on `macos-15`, and the Linux devcontainer cannot. The TypeScript and Rust suites run anywhere. When you change engine behavior from a container, say plainly in the PR that the Swift half was validated by CI rather than locally; never assume parity you did not observe.
 
-Run every suite locally before the initial push and before declaring a PR ready. There is no linter or formatter configured for the TypeScript and Swift halves — match the surrounding style rather than reformatting a file you touched. Rust is the exception: it has one canonical formatter and linter, so `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` gate [CI](.github/workflows/ci.yml) and must pass before a push.
+Run every suite locally before the initial push and before declaring a PR ready. There is no linter or formatter configured for the TypeScript and Swift halves — match the surrounding style rather than reformatting a file you touched. Rust is the exception: it has one canonical formatter and linter, so `cargo fmt --all --check` and `cargo clippy --all-targets -- -D warnings` gate [CI](.github/workflows/ci.yml) and must pass before a push.
 
 ## Working in `core/`
 
-[`core/`](core/) holds the **portable contract**: the things every binding must agree on, in a form no binding owns. TypeScript and Swift read it today; a Rust or Kotlin binding reads exactly the same files. Nothing in `core/` may assume a language, a runtime, or a platform.
+[`core/`](core/) holds the **portable contract**: the things every binding must agree on, in a form no binding owns. TypeScript, Swift, and Rust read it today; a Kotlin binding reads exactly the same files. Nothing in `core/` may assume a language, a runtime, or a platform.
 
 | Subtree | What it specifies |
 |---|---|
