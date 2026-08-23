@@ -110,7 +110,7 @@ async function start() {
 
   let started;
   try {
-    started = mode === "live" ? await buildLive() : buildScripted();
+    started = mode === "live" ? await buildLive(id) : buildScripted(id);
   } catch (error) {
     // A refused microphone or a missing key should read as a normal outcome, not a dead page.
     addEntry({ head: `could not start ${mode} mode`, note: error.message, variant: "rejected" });
@@ -125,7 +125,7 @@ async function start() {
   started.id = id;
   run = started;
   started.session.on((event) => {
-    if (started.id === runSequence) handleEvent(event);
+    if (id === runSequence) handleEvent(event);
   });
 
   try {
@@ -172,7 +172,7 @@ async function teardown(current) {
   await current.audioContext?.close().catch(() => {});
 }
 
-function buildScripted() {
+function buildScripted(id) {
   const scripted = new ScriptedProvider({
     script: DEMO_SCRIPT,
     speed: 1,
@@ -191,9 +191,22 @@ function buildScripted() {
     session: new RiffSession({
       bundle,
       host: buildHost(),
-      provider: observeProvider(scripted, { onToolResult: handleToolResult }),
+      provider: observeProvider(scripted, { onToolResult: guardedToolResult(id) }),
       store: new MemoryStore({ motifs: DEMO_MOTIFS }),
     }),
+  };
+}
+
+/**
+ * Tool results carry the same staleness risk as session events.
+ *
+ * Stopping a session does not cancel a dispatch already in flight, so a slow host call from the run
+ * someone just abandoned can land mid-way through the next one and set its reference id, its
+ * activity, or its submission. The run guard has to cover this path too.
+ */
+function guardedToolResult(id) {
+  return (entry) => {
+    if (id === runSequence) handleToolResult(entry);
   };
 }
 
@@ -204,7 +217,7 @@ function buildScripted() {
  * through `sendAudio`, so the browser's own echo cancellation and jitter buffering do the work that
  * would otherwise be an audio worklet in this file.
  */
-async function buildLive() {
+async function buildLive(id) {
   const { OpenAIRealtimeProvider, clientSecretCredentials } = await import("@riff/openai-realtime");
 
   const stream = await navigator.mediaDevices.getUserMedia({
@@ -244,7 +257,7 @@ async function buildLive() {
       session: new RiffSession({
         bundle,
         host: buildHost(),
-        provider: observeProvider(provider, { onToolResult: handleToolResult }),
+        provider: observeProvider(provider, { onToolResult: guardedToolResult(id) }),
         store: new MemoryStore({ motifs: DEMO_MOTIFS }),
       }),
     };
@@ -346,8 +359,20 @@ function handleToolResult({ name, args, result }) {
   }
 
   if (name === "submit_prompt") {
+    // A submission can be refused — nothing captured yet, a destination that does not exist, the
+    // proxy or GitHub failing. Reporting all of those as "sent" and opening the confirmation shows
+    // someone a prompt that was never delivered, which is how a send gets repeated.
+    if (result?.submitted !== true) {
+      addEntry({
+        head: "submit_prompt · not sent",
+        note: result?.reason ?? result?.message ?? result?.error ?? "the host refused the submission",
+        variant: "rejected",
+      });
+      return;
+    }
+
     lastSubmission = result;
-    addEntry({ head: "submit_prompt", note: result?.message ?? "sent" });
+    addEntry({ head: "submit_prompt", note: result.message ?? "sent" });
     // Filing for real is opt-in per send, not per session. Left ticked, replaying the script would
     // open a second issue without anyone asking for one.
     ui.allowIssues.checked = false;
@@ -670,6 +695,10 @@ async function saveKeys(body) {
     // Only clear the inputs once the server has taken them, so a rejected key can be corrected.
     ui.openaiKey.value = "";
     ui.githubKey.value = "";
+    // The repository goes too: left behind, the next save would resend it and quietly restore a
+    // target that Forget had just cleared. `applyConfig` has already put the live one in the
+    // placeholder, so nothing is lost by emptying the field.
+    ui.githubRepo.value = "";
     return true;
   } catch (error) {
     ui.keysProblem.textContent = error.message;
