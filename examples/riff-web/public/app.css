@@ -358,6 +358,13 @@ h2 {
   margin-bottom: 12px;
 }
 
+/* The region the strip labels. Stacks its two views exactly as they stacked in the pane. */
+.prompt-view:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: 6px;
+}
+
 .take {
   display: inline-flex;
   align-items: center;

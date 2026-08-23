@@ -20,6 +20,7 @@ const ui = {
   pending: document.getElementById("pending"),
   takes: document.getElementById("takes"),
   takesHint: document.getElementById("takes-hint"),
+  promptView: document.getElementById("prompt-view"),
   draft: document.getElementById("draft"),
   markdown: document.getElementById("markdown"),
   toggleMarkdown: document.getElementById("toggle-markdown"),
@@ -459,6 +460,10 @@ function addUtterance(utterance) {
  *
  * Hidden until there is more than one: a single draft needs no chooser, and the strip appearing is
  * itself the signal that a second prompt was started.
+ *
+ * A real tab set, not the look of one: exactly one tab is tabbable and the arrow keys move between
+ * them, because `role="tablist"` is a promise about how the thing behaves and assistive technology
+ * has no way to find out it was only decorative.
  */
 function renderTakes() {
   const takes = shown?.takes() ?? [];
@@ -467,25 +472,67 @@ function renderTakes() {
   ui.takes.hidden = takes.length < 2;
   ui.takesHint.hidden = ui.takes.hidden;
   ui.takes.replaceChildren();
-  if (ui.takes.hidden) return;
+  if (ui.takes.hidden) {
+    ui.promptView.removeAttribute("aria-labelledby");
+    return;
+  }
 
   for (const take of takes) {
     const status = takeStatus(take, activeId);
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "take";
-    button.dataset.status = status;
-    button.setAttribute("role", "tab");
-    button.setAttribute("aria-selected", String(take.id === viewingTakeId));
-    button.title =
-      status === "live"
-        ? "The prompt the next thing said lands in"
-        : "Set aside. Say so and Riff comes back to it";
+    const selected = take.id === viewingTakeId;
 
-    button.append(span(take.label ?? take.title?.text ?? take.id), span(status, "take-status"));
-    button.addEventListener("click", () => showTake(take.id));
-    ui.takes.append(button);
+    const tab = document.createElement("button");
+    tab.type = "button";
+    tab.className = "take";
+    tab.id = `take-tab-${take.id}`;
+    tab.dataset.status = status;
+    tab.dataset.takeId = take.id;
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-selected", String(selected));
+    tab.setAttribute("aria-controls", ui.promptView.id);
+    // Roving tabindex: Tab reaches the strip once, then the arrow keys move within it.
+    tab.tabIndex = selected ? 0 : -1;
+    tab.title = TAKE_STATUS_TITLES[status];
+
+    tab.append(span(take.label ?? take.title?.text ?? take.id), span(status, "take-status"));
+    tab.addEventListener("click", () => showTake(take.id));
+    tab.addEventListener("keydown", (event) => moveBetweenTakes(event));
+    ui.takes.append(tab);
+
+    if (selected) ui.promptView.setAttribute("aria-labelledby", tab.id);
   }
+}
+
+/**
+ * What each status means for what can still be done with the prompt.
+ *
+ * A submitted or discarded take is refused by `DraftBook.switchTo`, so saying Riff will come back to
+ * one would be the page promising something the engine declines to do.
+ */
+const TAKE_STATUS_TITLES = {
+  live: "The prompt the next thing said lands in",
+  parked: "Set aside. Say so and Riff comes back to it",
+  sent: "Already sent. It cannot be reopened, only read",
+  dropped: "Thrown away. It cannot be reopened, only read",
+};
+
+/** Arrow, Home, and End across the strip — the half of `role="tablist"` that is behavior. */
+function moveBetweenTakes(event) {
+  const tabs = [...ui.takes.children];
+  const current = tabs.indexOf(event.currentTarget);
+  const last = tabs.length - 1;
+
+  let next;
+  if (event.key === "ArrowRight" || event.key === "ArrowDown") next = current === last ? 0 : current + 1;
+  else if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = current === 0 ? last : current - 1;
+  else if (event.key === "Home") next = 0;
+  else if (event.key === "End") next = last;
+  else return;
+
+  event.preventDefault();
+  // Selection follows focus, which is the expected behavior when showing a tab is this cheap.
+  showTake(tabs[next].dataset.takeId);
+  ui.takes.querySelector('[aria-selected="true"]')?.focus();
 }
 
 /** Engine status in the viewer's terms, with the active take called out as the one being written to. */
