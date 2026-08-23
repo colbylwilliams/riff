@@ -594,7 +594,7 @@
       ]
     },
     "voice": {
-      "name": "cedar",
+      "name": "marin",
       "speed": 1
     },
     "audio": {
@@ -1172,5 +1172,5 @@
     "persistAudio": false,
     "redactSecretsFromTranscript": true
   },
-  "revision": "14978bd3de8327f4"
+  "revision": "8ae2710a81fd8b9b"
 }

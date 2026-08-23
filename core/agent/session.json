@@ -9,7 +9,7 @@
     "output": ["audio"]
   },
   "voice": {
-    "name": "cedar",
+    "name": "marin",
     "speed": 1.0
   },
   "audio": {
