@@ -10,6 +10,7 @@ Cross-cutting rules for AI coding agents working in this repository. Pair this g
 | [`packages/`](packages/) | The TypeScript binding: [`riff-core`](packages/riff-core/) (engine), [`riff-openai-realtime`](packages/riff-openai-realtime/) (provider), [`riff-github`](packages/riff-github/) (host). |
 | [`swift/`](swift/) | The Swift binding: `RiffCore` (the same engine, natively), `RiffOpenAIRealtime`, and `RiffAudio` (capture, playback, echo cancellation). |
 | [`tools/build-bundle.mjs`](tools/build-bundle.mjs) | Compiles `core/agent` into the committed bundle, validates the manifest, and mirrors the bundle and conformance cases into each binding's build. |
+| [`examples/`](examples/) | Embedding applications, kept honest by running the real engine rather than a mock. [`riff-web`](examples/riff-web/) is a browser demo with a microphone, a live draft, and a send. |
 | [`docs/`](docs/) | Architecture, the grounding algorithm, the artifact contract, the host bridge, providers, conformance, security. Design rationale lives here. |
 
 ## Working principles
