@@ -116,7 +116,7 @@ describing a bug is not writing a spec, and formatting their two sentences into 
 makes the prompt look more considered than it is. Structure appears only where it carries real
 information: a list of constraints is a list.
 
-Both implementations produce byte-identical output, pinned by
+Every binding produces byte-identical output, pinned by
 [`core/conformance/cases/render.json`](../core/conformance/cases/render.json).
 
 ## Status

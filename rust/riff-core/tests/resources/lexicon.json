@@ -1,0 +1,67 @@
+{
+  "$comment": "Transcription biasing vocabulary. The list is capped before it reaches the provider, so this comparator decides which terms survive, and different biasing produces different transcripts — which is upstream of the ledger, the grounding check, and the prompt body. Both bindings must order it identically.",
+  "cases": [
+    {
+      "id": "mishearings-outrank-everything",
+      "description": "Terms with recorded mishearings are the ones recognizers actually get wrong.",
+      "terms": [
+        { "canonical": "alpha", "kind": "other" },
+        { "canonical": "beta", "kind": "other", "heardAs": ["bayta", "beeta", "baker"] },
+        { "canonical": "gamma", "kind": "other", "heardAs": ["gama"] }
+      ],
+      "expect": ["beta", "gamma", "alpha"]
+    },
+    {
+      "id": "acronyms-not-camel-case",
+      "description": "Two consecutive capitals scores; an ordinary product name does not.",
+      "terms": [
+        { "canonical": "GitHub", "kind": "product" },
+        { "canonical": "SDK", "kind": "acronym" },
+        { "canonical": "Postgres", "kind": "product" }
+      ],
+      "expect": ["SDK", "GitHub", "Postgres"]
+    },
+    {
+      "id": "workspace-vocabulary-first",
+      "description": "What this speaker will actually say outranks general vocabulary.",
+      "terms": [
+        { "canonical": "zebra", "kind": "other", "scope": "workspace" },
+        { "canonical": "apple", "kind": "other", "scope": "user" },
+        { "canonical": "mango", "kind": "other" }
+      ],
+      "expect": ["zebra", "apple", "mango"]
+    },
+    {
+      "id": "multi-word-names-score",
+      "description": "Names with spaces or separators are mangled more often than single words.",
+      "terms": [
+        { "canonical": "feature flag", "kind": "other" },
+        { "canonical": "cherry-pick", "kind": "other" },
+        { "canonical": "staging", "kind": "other" }
+      ],
+      "expect": ["cherry-pick", "feature flag", "staging"]
+    },
+    {
+      "id": "ties-break-case-insensitively-then-by-code-point",
+      "description": "Locale rules would make the vocabulary differ between two devices, so ordering is defined without them.",
+      "terms": [
+        { "canonical": "Banana", "kind": "other" },
+        { "canonical": "apple", "kind": "other" },
+        { "canonical": "Cherry", "kind": "other" },
+        { "canonical": "date", "kind": "other" }
+      ],
+      "expect": ["apple", "Banana", "Cherry", "date"]
+    },
+    {
+      "id": "cap-keeps-the-highest-scoring",
+      "description": "The limit is applied after ordering, so the terms that matter survive it.",
+      "limit": 2,
+      "terms": [
+        { "canonical": "plain", "kind": "other" },
+        { "canonical": "API", "kind": "acronym", "heardAs": ["a p i"] },
+        { "canonical": "webhook", "kind": "other", "heardAs": ["web hook"] }
+      ],
+      "expect": ["API", "webhook"]
+    }
+  ]
+}

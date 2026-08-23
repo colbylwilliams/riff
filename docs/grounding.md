@@ -3,9 +3,10 @@
 Grounding is the mechanism that keeps a prompt in the speaker's words. It is the part of Riff most
 worth understanding, because it is what turns "in your own voice" from a claim into a property.
 
-Implemented in [`packages/riff-core/src/grounding.ts`](../packages/riff-core/src/grounding.ts) and
-[`swift/Sources/RiffCore/Grounding.swift`](../swift/Sources/RiffCore/Grounding.swift), and specified
-as data in [`core/conformance/cases/grounding.json`](../core/conformance/cases/grounding.json).
+Implemented in [`grounding.ts`](../packages/riff-core/src/grounding.ts),
+[`Grounding.swift`](../swift/Sources/RiffCore/Grounding.swift), and
+[`grounding.rs`](../rust/riff-core/src/grounding.rs), and specified as data in
+[`grounding.json`](../core/conformance/cases/grounding.json).
 
 ## Why a mechanism and not an instruction
 

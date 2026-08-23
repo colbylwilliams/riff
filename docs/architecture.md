@@ -40,15 +40,16 @@ everywhere:
 
 Instructions, tool contracts, session defaults, and the seed lexicon live in `core/agent` as
 markdown and JSON, and compile to one bundle every binding loads. Behavior changes are edits to data
-files, not parallel edits to Swift and TypeScript.
+files, not parallel edits to TypeScript, Swift, and Rust.
 
-The bundle is generated and committed. Swift and any future binding can build without a Node
+The bundle is generated and committed. Swift, Rust, and any future binding can build without a Node
 toolchain, and `npm test` fails if the committed copy has drifted from source, so no binding can
 quietly ship a different agent.
 
-Both `loadBundle` implementations validate on load and refuse a bundle that would let the agent drift
-from its contract — an out-of-range grounding threshold, an undefined render profile, and in
-particular `autoSubmit` set to true.
+Every binding validates on load and refuses a bundle that would let the agent drift from its
+contract — an out-of-range grounding threshold, an undefined render profile, and in particular
+`autoSubmit` set to true. Each new binding adds its own enforcement point rather than inheriting
+one, which is why the check is listed among the things a binding must implement.
 
 ## Session lifecycle
 
@@ -144,6 +145,17 @@ tears down rather than lingering half-alive with an open microphone. `stop()` de
 finish the session's event stream, because `start()` permits a restart and a finished stream would
 leave a reconnected session emitting nothing; `.closed` is the signal for a consumer to stop
 iterating, and the stream ends when the session is released.
+
+**Rust.** The same flag lifecycle again, and for the same reason as Swift: `step()` awaits the tool
+batch, so a flag scoped to the dispatch would be clear before the turn's `response.done` was read.
+There is no runtime and no spawning. `RiffSession` is an ordinary `&mut self` object, which makes the
+races the other bindings guard against unrepresentable — the engine's state has one owner, and the
+borrow checker enforces it. Events go out through listeners rather than a stream, because a listener
+needs nothing from the executor. Provider events arrive by pull: `RealtimeConnection::next_event`
+is a future the session awaits in a loop, and the loop races it against `Clock::sleep` so an expiry
+warning still fires in a session that has gone quiet. Tools mutate state and return a list of
+effects, which the session then turns into events, so nothing calls back into the session while it
+holds a borrow of itself.
 
 ## Error handling
 

@@ -17,7 +17,8 @@
     "typecheck": "tsc --build",
     "demo": "node examples/riff-web/server.mjs",
     "demo:verify": "node examples/riff-web/verify.mjs",
-    "swift:test": "swift test --package-path swift"
+    "swift:test": "swift test --package-path swift",
+    "rust:test": "cd rust && cargo test"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",

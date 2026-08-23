@@ -66,5 +66,11 @@ node_modules/
 packages/*/dist/
 *.tsbuildinfo
 
+# Rust
+#
+# Cargo.lock is committed on purpose: with no third-party dependencies it is three lines long, and
+# a diff to it is a diff to the "no dependencies the embedder did not choose" invariant.
+rust/target/
+
 # Local scratch, ignored by convention
 .local/

@@ -84,7 +84,8 @@ Other details the mapping gets right:
 
 **WebSocket** — base64 PCM16 at 24 kHz inside JSON events. Works everywhere with no media stack,
 which makes it the transport for servers, tests, terminals, and any platform without WebRTC. This is
-what the Swift package uses, over `URLSessionWebSocketTask`.
+what the Swift package uses, over `URLSessionWebSocketTask`. The Rust crate has no socket of its
+own: `RealtimeTransport` is the seam, and the embedder plugs their WebSocket library into it.
 
 **WebRTC** — events on an `oai-events` data channel, audio on a media track. Better on a phone or in
 a browser because the media stack handles jitter and packet loss that raw PCM over a socket does
@@ -94,7 +95,9 @@ over the person who interrupted; the provider does this automatically.
 ### Credentials
 
 Clients connect with ephemeral secrets. `mintClientSecret` is the only part of the provider that
-must run server-side, and it is the reason no long-lived key ever reaches a device.
+must run server-side, and it is the reason no long-lived key ever reaches a device. The Rust crate
+splits it in two — `client_secret_request` builds the HTTP request and `parse_client_secret` reads
+the answer — so the call is made by code the embedder controls, with an HTTP client they chose.
 
 ```ts
 // Your backend, behind your own auth
