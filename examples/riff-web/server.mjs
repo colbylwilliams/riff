@@ -47,6 +47,23 @@ const MOUNTS = [
 
 const BUNDLE_PATH = join(repoRoot, "core/dist/riff-agent.bundle.json");
 
+/**
+ * The only `Host` values this server answers API calls for.
+ *
+ * Comparing `Origin` against whatever `Host` arrived would accept any pair that agrees with itself,
+ * which a DNS-rebinding page controls both halves of: it serves `evil.example`, points it at
+ * 127.0.0.1, and sends both headers as its own name. Pinning the accepted names here means such a
+ * request never matches, whatever it claims about itself.
+ */
+const ALLOWED_HOSTS = new Set([`localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`]);
+
+function fromThisPage(request) {
+  if (!ALLOWED_HOSTS.has(request.headers.host ?? "")) return false;
+  const origin = request.headers.origin;
+  // Browsers always send an Origin on these requests; curl and friends send none.
+  return !origin || [...ALLOWED_HOSTS].some((host) => origin === `http://${host}`);
+}
+
 const CONTENT_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -138,12 +155,9 @@ const server = createServer(async (request, response) => {
 
   try {
     if (url.pathname.startsWith("/api/")) {
-      // A page on another origin can send a POST here even though it cannot read the reply, which
-      // would be enough to spend a stored token. Same-origin requests carry a matching Origin;
-      // curl and friends send none at all.
-      const origin = request.headers.origin;
-      if (origin && origin !== `http://${request.headers.host}`) {
-        return json(response, 403, { error: "cross-origin requests are not accepted" });
+      // These endpoints spend credentials, so they answer only to the page this server serves.
+      if (!fromThisPage(request)) {
+        return json(response, 403, { error: "only requests from the demo page are accepted" });
       }
     }
 

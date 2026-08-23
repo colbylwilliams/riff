@@ -275,6 +275,14 @@ function handleEvent(event) {
       addEntry({ head: "interrupted", note: "they started talking over it", variant: "said" });
       break;
 
+    case "closed":
+      // A session can end without anyone pressing Stop — a dropped data channel, or the model
+      // hanging up. Without this the run stays installed and the microphone keeps capturing after
+      // the conversation is over. Re-entrant when `stop()` closes the session itself, which is
+      // harmless: `run` is already null by then and `stop()` returns immediately.
+      void stop();
+      break;
+
     case "submitted":
       lastArtifact = event.artifact;
       renderDraft(event.artifact);
@@ -515,7 +523,7 @@ function showSent() {
     : (lastSubmission?.message ??
       "This is the prompt that would have been delivered. The host accepted it and sent it nowhere.");
 
-  ui.sent.hidden = false;
+  if (ui.sent.hidden) openSheet(ui.sent);
 }
 
 /* ── cross-highlighting ──────────────────────────────────────────────────── */
@@ -654,6 +662,30 @@ async function saveKeys(body) {
 }
 
 
+/* ── sheets ──────────────────────────────────────────────────────────────── */
+
+/**
+ * Opening a sheet leaves focus behind it otherwise, so a keyboard is still driving the controls
+ * underneath something that has covered them, and assistive technology is never told it appeared.
+ */
+let focusBeforeSheet = null;
+
+function openSheet(sheet) {
+  focusBeforeSheet = document.activeElement;
+  sheet.hidden = false;
+  // `querySelector` walks the document, not the selector list, so without a marker focus lands on
+  // whichever control comes first in the markup rather than the one worth starting on.
+  const target =
+    sheet.querySelector("[data-autofocus]") ?? sheet.querySelector("input:not([disabled]), button");
+  target?.focus();
+}
+
+function closeSheet(sheet) {
+  sheet.hidden = true;
+  focusBeforeSheet?.focus?.();
+  focusBeforeSheet = null;
+}
+
 /* ── chrome ──────────────────────────────────────────────────────────────── */
 
 function reset() {
@@ -707,15 +739,12 @@ function paragraph(text, className) {
 
 ui.mic.addEventListener("click", () => (run ? stop() : start()));
 ui.interrupt.addEventListener("click", () => run?.session.interrupt());
-ui.sentClose.addEventListener("click", () => (ui.sent.hidden = true));
+ui.sentClose.addEventListener("click", () => closeSheet(ui.sent));
 
-ui.keysOpen.addEventListener("click", () => {
-  ui.keys.hidden = false;
-  ui.openaiKey.focus();
-});
-ui.keysClose.addEventListener("click", () => (ui.keys.hidden = true));
+ui.keysOpen.addEventListener("click", () => openSheet(ui.keys));
+ui.keysClose.addEventListener("click", () => closeSheet(ui.keys));
 ui.keys.addEventListener("click", (event) => {
-  if (event.target === ui.keys) ui.keys.hidden = true;
+  if (event.target === ui.keys) closeSheet(ui.keys);
 });
 
 ui.keysForm.addEventListener("submit", async (event) => {
@@ -728,7 +757,7 @@ ui.keysForm.addEventListener("submit", async (event) => {
   if (ui.githubKey.value.trim()) body.githubToken = ui.githubKey.value;
   if (ui.githubRepo.value.trim()) body.repository = ui.githubRepo.value;
 
-  if (await saveKeys(body)) ui.keys.hidden = true;
+  if (await saveKeys(body)) closeSheet(ui.keys);
 });
 
 ui.keysForget.addEventListener("click", () =>

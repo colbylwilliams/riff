@@ -106,6 +106,9 @@ export class ScriptedProvider {
       else if (step.agent) await this.#respond(step.agent);
       else if (step.tools) await this.#callTools(step.tools, this.#script[index + 1]);
 
+      // A step that was interrupted mid-sleep has no end to report. Its callback writes straight to
+      // the page, so firing it after an immediate restart would hide the new run's indicator.
+      if (this.#aborted) return;
       this.#onStep(step, "end");
       await this.#sleep(step.pause ?? 350);
     }

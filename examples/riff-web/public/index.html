@@ -111,10 +111,10 @@
       <span class="chip chip--rejected">rejected</span>
     </div>
 
-    <div id="keys" class="sheet" hidden>
+    <div id="keys" class="sheet" role="dialog" aria-modal="true" aria-labelledby="keys-heading" hidden>
       <form id="keys-form" class="sheet-card">
         <div class="sheet-head">
-          <h3>Keys</h3>
+          <h3 id="keys-heading">Keys</h3>
           <button id="keys-close" class="ghost" type="button">close</button>
         </div>
 
@@ -128,7 +128,7 @@
         <label class="field">
           <span>OpenAI API key <em id="openai-status">not set</em></span>
           <input id="openai-key" type="password" autocomplete="off" spellcheck="false"
-            placeholder="sk-…  enables live mic" />
+            data-autofocus placeholder="sk-…  enables live mic" />
         </label>
 
         <label class="field">
@@ -152,7 +152,7 @@
       </form>
     </div>
 
-    <div id="sent" class="sheet" hidden>
+    <div id="sent" class="sheet" role="dialog" aria-modal="true" aria-labelledby="sent-title" hidden>
       <div class="sheet-card">
         <div class="sheet-head">
           <span class="sent-badge">sent</span>
