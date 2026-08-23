@@ -635,12 +635,14 @@ impl ToolRuntime {
 
         Ok(Json::Object(json_object! {
             "prompts" => Json::Array(prompts.iter().map(|prompt| {
+                    // Snake case because these are the keys the tool contract in
+                    // `core/agent/tools/recall_prompts.json` names, and the model reads them.
                     let mut entry = json_object! {
-                        "promptId" => prompt.prompt_id.clone(),
+                        "prompt_id" => prompt.prompt_id.clone(),
                         "title" => prompt.title.clone(),
                         "excerpt" => prompt.excerpt.clone(),
                     };
-                    entry.insert_some("submittedAt", prompt.submitted_at.clone().map(Json::from));
+                    entry.insert_some("submitted_at", prompt.submitted_at.clone().map(Json::from));
                     entry.insert_some("status", prompt.status.clone().map(Json::from));
                     entry.insert_some("outcome", prompt.outcome.clone().map(Json::from));
                     entry.insert_some("url", prompt.url.clone().map(Json::from));

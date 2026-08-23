@@ -349,6 +349,7 @@ struct HostState {
     environment: HostEnvironment,
     refuse_submission: bool,
     fail_environment: bool,
+    prior_prompts: Vec<PriorPrompt>,
 }
 
 impl RecordingHost {
@@ -379,6 +380,11 @@ impl RecordingHost {
     /// Makes the host unable to say what the speaker's world contains.
     pub fn fail_environment(&self) {
         self.lock().fail_environment = true;
+    }
+
+    /// What `recall_prompts` will hand back.
+    pub fn set_prior_prompts(&self, prompts: Vec<PriorPrompt>) {
+        self.lock().prior_prompts = prompts;
     }
 
     /// Every prompt the host was handed.
@@ -414,7 +420,8 @@ impl RiffHost for RecordingHost {
         &self,
         _request: RecallPromptsRequest,
     ) -> BoxFuture<'_, HostResult<Vec<PriorPrompt>>> {
-        Box::pin(async { Ok(Vec::new()) })
+        let prompts = self.lock().prior_prompts.clone();
+        Box::pin(async move { Ok(prompts) })
     }
 
     fn submit_prompt(

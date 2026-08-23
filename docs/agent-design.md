@@ -158,8 +158,8 @@ retry, not the conversation.
 
 `agent.json` carries a small policy block enforced by the engine rather than by instruction.
 
-- `autoSubmit` must be `false`. Both `loadBundle` implementations reject a bundle where it is not.
-  The speaker decides when a prompt is sent; this is not configurable.
+- `autoSubmit` must be `false`. Every binding rejects a bundle where it is not, on load, and the
+  build refuses to compile one. The speaker decides when a prompt is sent; this is not configurable.
 - `readinessRequires` lists the sections a prompt needs before it can be submitted. Submitting
   without them returns a message telling the agent what to ask for, rather than sending something
   empty.

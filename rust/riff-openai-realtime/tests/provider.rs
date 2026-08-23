@@ -590,6 +590,43 @@ fn bounds_the_whole_handshake_rather_than_the_gap_between_messages() {
 }
 
 #[test]
+fn defaults_to_the_endpoint_the_chosen_transport_can_actually_open() {
+    // WebRTC signalling POSTs an SDP offer over HTTPS; handing that factory the WebSocket endpoint
+    // gives it an address it cannot use.
+    for (kind, expected) in [
+        (TransportKind::WebSocket, "wss://api.openai.com/v1/realtime"),
+        (
+            TransportKind::WebRtc,
+            "https://api.openai.com/v1/realtime/calls",
+        ),
+    ] {
+        let transport = FakeTransport::new(kind);
+        transport.deliver(session_created());
+        let factory = Arc::new(FakeFactory {
+            transport: transport.clone(),
+            request: Mutex::new(None),
+        });
+
+        let bundle = bundle();
+        let provider = OpenAIRealtimeProvider::new(OpenAIRealtimeOptions::new(
+            Arc::new(ApiKeyCredentials::new("sk-test")),
+            factory.clone(),
+        ));
+        block_on(provider.connect(ConnectRequest {
+            instructions: bundle.instructions.clone(),
+            tools: bundle.tools.clone(),
+            session: bundle.session.clone(),
+            vocabulary: Vec::new(),
+        }))
+        .expect("the fake transport completes the handshake");
+
+        let url = factory.request.lock().unwrap().clone().expect("opened").url;
+        assert!(url.starts_with(expected), "{kind:?} was given {url}");
+        assert!(url.contains("model="), "{kind:?} lost the model");
+    }
+}
+
+#[test]
 fn advertises_the_audio_format_the_chosen_transport_actually_carries() {
     // An embedder configures capture and playback from this before anything connects, so reporting
     // PCM for a WebRTC session would have them set up the wrong hardware path entirely.

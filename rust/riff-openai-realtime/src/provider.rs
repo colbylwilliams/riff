@@ -26,6 +26,13 @@ use crate::transport::{
 /// The default WebSocket endpoint.
 pub const DEFAULT_WEBSOCKET_URL: &str = "wss://api.openai.com/v1/realtime";
 
+/// The default WebRTC endpoint.
+///
+/// A different scheme and a different path: WebRTC signalling POSTs an SDP offer over HTTPS rather
+/// than opening a socket, so handing a WebRTC factory the WebSocket endpoint gives it an address it
+/// cannot use.
+pub const DEFAULT_WEBRTC_URL: &str = "https://api.openai.com/v1/realtime/calls";
+
 /// How long to wait for `session.created` before giving up.
 const HANDSHAKE_TIMEOUT_MS: u64 = 15_000;
 
@@ -136,7 +143,12 @@ impl RealtimeProvider for OpenAIRealtimeProvider {
                 .transport
                 .open(TransportRequest {
                     url: endpoint_with_model(
-                        self.options.url.as_deref().unwrap_or(DEFAULT_WEBSOCKET_URL),
+                        self.options.url.as_deref().unwrap_or(
+                            match self.options.transport.kind() {
+                                TransportKind::WebRtc => DEFAULT_WEBRTC_URL,
+                                TransportKind::WebSocket => DEFAULT_WEBSOCKET_URL,
+                            },
+                        ),
                         &model,
                     ),
                     credential,

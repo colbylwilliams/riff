@@ -9,8 +9,8 @@ mod support;
 use std::sync::Arc;
 
 use riff_core::{
-    AgentBundle, ContextItem, Destination, HostEnvironment, Json, MemoryStore, RiffEvent,
-    RiffSession, RiffSessionOptions, SessionState, SystemClock, TakeStatus, json_object,
+    AgentBundle, ContextItem, Destination, HostEnvironment, Json, MemoryStore, PriorPrompt,
+    RiffEvent, RiffSession, RiffSessionOptions, SessionState, SystemClock, TakeStatus, json_object,
 };
 use support::{
     Call, FailingStore, FakeProvider, InstantClock, RecordingHost, StalledHost, StallingStore,
@@ -1415,5 +1415,51 @@ fn a_handle_keeps_working_across_a_reconnect() {
     assert!(
         !first.calls().contains(&Call::Audio(160)),
         "and audio must not reach the dead one"
+    );
+}
+
+#[test]
+fn reports_recalled_prompts_with_the_keys_the_tool_contract_names() {
+    // The model reads these keys, and the contract in `core/agent/tools/recall_prompts.json` is
+    // what tells it which to expect. A binding that answers in a different case is answering a
+    // different question.
+    let bundle = AgentBundle::bundled().expect("the vendored bundle must load");
+    let returns = bundle
+        .tool("recall_prompts")
+        .and_then(|tool| tool.returns.as_ref())
+        .and_then(|returns| returns.get_str("description"))
+        .expect("the contract documents its result shape");
+
+    let mut harness = Harness::start();
+    harness.host.set_prior_prompts(vec![PriorPrompt {
+        prompt_id: "p1".to_owned(),
+        title: "Fix the uploader".to_owned(),
+        excerpt: "the uploader keeps dying".to_owned(),
+        submitted_at: Some("2026-01-01T00:00:00.000Z".to_owned()),
+        ..PriorPrompt::default()
+    }]);
+
+    let result = harness.call(
+        "recall_prompts",
+        Json::Object(json_object! { "query" => "the uploader" }),
+    );
+    let prompt = &result
+        .get("prompts")
+        .map(Json::array_or_empty)
+        .unwrap_or(&[])[0];
+
+    for key in ["prompt_id", "submitted_at"] {
+        assert!(
+            returns.contains(key),
+            "the contract should name {key}; it says: {returns}"
+        );
+        assert!(
+            prompt.get(key).is_some(),
+            "the result is missing {key}: {prompt:?}"
+        );
+    }
+    assert!(
+        prompt.get("promptId").is_none(),
+        "camel case leaked: {prompt:?}"
     );
 }

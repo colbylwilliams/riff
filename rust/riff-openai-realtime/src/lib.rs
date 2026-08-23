@@ -29,7 +29,9 @@ pub use client_secret::{
     client_secret_request, parse_client_secret,
 };
 pub use events::{MappedEvents, client_events, map_server_event, server_events};
-pub use provider::{DEFAULT_WEBSOCKET_URL, OpenAIRealtimeOptions, OpenAIRealtimeProvider};
+pub use provider::{
+    DEFAULT_WEBRTC_URL, DEFAULT_WEBSOCKET_URL, OpenAIRealtimeOptions, OpenAIRealtimeProvider,
+};
 pub use session_config::{
     BiasingStyle, BuildSessionOptions, REASONING_MODELS, biasing_style_for, build_openai_session,
     build_vocabulary_patch, is_reasoning_model,

@@ -46,9 +46,10 @@ The bundle is generated and committed. Swift, Rust, and any future binding can b
 toolchain, and `npm test` fails if the committed copy has drifted from source, so no binding can
 quietly ship a different agent.
 
-Both `loadBundle` implementations validate on load and refuse a bundle that would let the agent drift
-from its contract — an out-of-range grounding threshold, an undefined render profile, and in
-particular `autoSubmit` set to true.
+Every binding validates on load and refuses a bundle that would let the agent drift from its
+contract — an out-of-range grounding threshold, an undefined render profile, and in particular
+`autoSubmit` set to true. Each new binding adds its own enforcement point rather than inheriting
+one, which is why the check is listed among the things a binding must implement.
 
 ## Session lifecycle
 

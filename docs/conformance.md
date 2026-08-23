@@ -118,9 +118,9 @@ alignment a second time without canonicalization and comparing.
 **Tool-call batching relied on event ordering.** The original design counted outstanding calls and
 requested a continuation when the count reached zero. That works when events are emitted
 synchronously in a loop and breaks when they arrive through an async sequence, where each call
-completes before the next is read — producing one spoken reply per tool. Both implementations now
-carry a turn's calls in a single `tool.calls` event, and the in-flight flag is set when the batch
-arrives and cleared when the continuation starts, so nothing depends on delivery timing.
+completes before the next is read — producing one spoken reply per tool. Every binding now carries a
+turn's calls in a single `tool.calls` event, and the in-flight flag is set when the batch arrives and
+cleared when the continuation starts, so nothing depends on delivery timing.
 
 A later review found four more divergences of the same kind, each present in one implementation
 only: a submitted take stayed active in TypeScript so the next sentence spoken landed inside a
