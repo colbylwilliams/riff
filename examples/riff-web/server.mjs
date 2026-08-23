@@ -151,9 +151,12 @@ function githubHost({ allowIssues = false } = {}) {
 }
 
 const server = createServer(async (request, response) => {
-  const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
-
   try {
+    // Parsed against a fixed base rather than the request's own Host, which is attacker-supplied
+    // and need not be a valid authority — `Host: [` threw here, outside the guard, and took the
+    // process down. Only the path is wanted; `fromThisPage` vets the real Host separately.
+    const url = new URL(request.url ?? "/", "http://localhost");
+
     if (url.pathname.startsWith("/api/")) {
       // These endpoints spend credentials, so they answer only to the page this server serves.
       if (!fromThisPage(request)) {

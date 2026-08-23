@@ -667,12 +667,26 @@ async function saveKeys(body) {
 /**
  * Opening a sheet leaves focus behind it otherwise, so a keyboard is still driving the controls
  * underneath something that has covered them, and assistive technology is never told it appeared.
+ *
+ * The rest of the page is made `inert` for the duration. Without that, `aria-modal` is a claim the
+ * page does not honor — Tab walks straight out of the dialog and operates what it is covering.
  */
 let focusBeforeSheet = null;
+let openSheetElement = null;
 
 function openSheet(sheet) {
+  // Only one sheet is ever the modal one; a second opening over the first would otherwise leave it
+  // visible but inert, which looks like the page has frozen.
+  if (openSheetElement && openSheetElement !== sheet) closeSheet(openSheetElement);
+
   focusBeforeSheet = document.activeElement;
+  openSheetElement = sheet;
   sheet.hidden = false;
+
+  for (const sibling of document.body.children) {
+    if (sibling !== sheet) sibling.inert = true;
+  }
+
   // `querySelector` walks the document, not the selector list, so without a marker focus lands on
   // whichever control comes first in the markup rather than the one worth starting on.
   const target =
@@ -682,6 +696,11 @@ function openSheet(sheet) {
 
 function closeSheet(sheet) {
   sheet.hidden = true;
+  if (openSheetElement !== sheet) return;
+
+  // Leaving these set would make the whole page unusable, so it happens on every close path.
+  for (const sibling of document.body.children) sibling.inert = false;
+  openSheetElement = null;
   focusBeforeSheet?.focus?.();
   focusBeforeSheet = null;
 }
@@ -697,7 +716,7 @@ function reset() {
   ui.ledger.replaceChildren();
   ui.activity.replaceChildren();
   ui.utteranceCount.textContent = "0";
-  ui.sent.hidden = true;
+  closeSheet(ui.sent);
   setFidelity(0);
   renderDraft(null);
 }
@@ -706,6 +725,9 @@ function setMicRunning(running) {
   ui.mic.classList.toggle("is-running", running);
   ui.mic.disabled = false;
   ui.micLabel.textContent = running ? "Stop" : defaultMicLabel();
+  // A session holds the host it was built with, so changing credentials underneath it would move
+  // the pill to a repository the conversation is not actually talking to.
+  setKeysAvailable(!running);
   // Live mode stays off without a key on the server, so it is not simply the inverse of `running`.
   for (const input of document.querySelectorAll('input[name="mode"]')) {
     input.disabled = running || (input.value === "live" && !liveAvailable);
@@ -714,8 +736,16 @@ function setMicRunning(running) {
 
 function setMicBusy(busy) {
   ui.mic.disabled = busy;
+  // `busy` is the window between choosing a host and having a session; `run` is after. Keys are
+  // unavailable for both, and this path also has to re-enable them when a start fails outright.
+  setKeysAvailable(!busy && !run);
   if (busy) ui.micLabel.textContent = "Starting…";
   else if (!run) ui.micLabel.textContent = defaultMicLabel();
+}
+
+function setKeysAvailable(available) {
+  ui.keysOpen.disabled = !available;
+  ui.keysOpen.title = available ? "" : "Stop the session to change keys";
 }
 
 function defaultMicLabel() {
