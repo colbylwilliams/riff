@@ -24,15 +24,28 @@
 //! - [`Clock`] supplies time and delays. [`SystemClock`] works anywhere; an embedder already on an
 //!   async runtime should implement it over that runtime's timer.
 //!
+//! [`RiffSession::run`] borrows the session for the length of the conversation, so the microphone
+//! and the stop button reach it through a [`RiffHandle`] — cloneable and `Send`, so the audio thread
+//! can hold one.
+//!
 //! ```no_run
 //! use std::sync::Arc;
 //! use riff_core::{AgentBundle, RealtimeProvider, RiffSession, RiffSessionOptions};
 //!
-//! # async fn example(provider: Arc<dyn RealtimeProvider>) -> Result<(), Box<dyn std::error::Error>> {
+//! # async fn example(provider: Arc<dyn RealtimeProvider>, mic: std::sync::mpsc::Receiver<Vec<u8>>) -> Result<(), Box<dyn std::error::Error>> {
 //! let bundle = Arc::new(AgentBundle::bundled()?);
 //! let mut session = RiffSession::new(RiffSessionOptions::new(bundle, provider));
 //! session.on(Box::new(|event| println!("{event:?}")));
 //! session.start().await?;
+//!
+//! let handle = session.control_handle();
+//! std::thread::spawn(move || {
+//!     for chunk in mic {
+//!         handle.send_audio(&chunk);
+//!     }
+//!     handle.stop("the speaker is done");
+//! });
+//!
 //! session.run().await;
 //! # Ok(())
 //! # }
@@ -42,6 +55,7 @@ pub mod bundle;
 pub mod draft;
 pub mod error;
 pub mod grounding;
+pub mod handle;
 pub mod host;
 pub mod json;
 pub mod ledger;
@@ -62,6 +76,7 @@ pub use draft::{
 };
 pub use error::{HostError, RiffError};
 pub use grounding::{GroundingChecker, SourceSpan, longest_common_subsequence};
+pub use handle::RiffHandle;
 pub use host::{
     Destination, HostEnvironment, HostResult, LookupTermRequest, MemoryStore, NullHost,
     PriorPrompt, RecallPromptsRequest, ResolveReferenceRequest, RiffHost, RiffStore, SubmitOptions,

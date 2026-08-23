@@ -21,6 +21,8 @@ Riff is a library, not an application, and the standard library has no async run
 
 Async methods are ordinary futures the embedder drives. Nothing here spawns a task, so the engine runs on tokio, on `async-std`, or on a hand-rolled executor without knowing the difference. [`RiffSession::run`](riff-core/src/session.rs) is the event pump; [`RiffSession::step`](riff-core/src/session.rs) handles one event, for an embedder that wants to own the loop.
 
+The pump borrows the session for the length of the conversation, which is what keeps the engine's state single-owned. [`RiffHandle`](riff-core/src/handle.rs) is how the microphone and the stop button reach it anyway: cloneable and `Send`, with `send_audio` going straight to the connection and everything that touches session state queued for the pump to apply between events. No lock is ever held across an await, and audio never waits on a tool call.
+
 ```rust,no_run
 use std::sync::Arc;
 use riff_core::{AgentBundle, RiffSession, RiffSessionOptions};
@@ -32,6 +34,16 @@ options.host = Arc::new(my_host);
 let mut session = RiffSession::new(options);
 session.on(Box::new(|event| render(event)));
 session.start().await?;
+
+// Cloneable and Send, so the audio thread can hold one while the pump owns the session.
+let handle = session.control_handle();
+std::thread::spawn(move || {
+    for chunk in microphone {
+        handle.send_audio(&chunk);
+    }
+    handle.stop("the speaker is done");
+});
+
 session.run().await;
 ```
 

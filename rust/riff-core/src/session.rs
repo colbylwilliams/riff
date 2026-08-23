@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use crate::bundle::SessionOverrides;
 use crate::draft::Take;
+use crate::handle::{Command, CommandQueue, ConnectionSlot, RiffHandle};
 use crate::host::{HostEnvironment, MemoryStore, NullHost, RiffHost, RiffStore};
 use crate::provider::{
     ConnectRequest, ProviderEvent, ProviderFault, RealtimeConnection, RealtimeProvider,
@@ -169,7 +170,9 @@ pub struct RiffSession {
     clock: Arc<dyn Clock>,
     overrides: SessionOverrides,
 
-    connection: Option<Arc<dyn RealtimeConnection>>,
+    /// Shared with every [`RiffHandle`], so one keeps working across a reconnect.
+    connection: Arc<ConnectionSlot>,
+    commands: Arc<CommandQueue>,
     listeners: Vec<EventListener>,
     state: SessionState,
     tools_in_flight: bool,
@@ -201,7 +204,8 @@ impl RiffSession {
             store: options.store,
             clock: options.clock,
             overrides: options.overrides,
-            connection: None,
+            connection: Arc::new(ConnectionSlot::default()),
+            commands: Arc::new(CommandQueue::default()),
             listeners: Vec::new(),
             state: SessionState::Idle,
             tools_in_flight: false,
@@ -221,7 +225,7 @@ impl RiffSession {
     /// The provider's identity for the session, once connected.
     pub fn session_id(&self) -> Option<String> {
         self.connection
-            .as_ref()
+            .get()
             .map(|connection| connection.session_id())
     }
 
@@ -264,7 +268,7 @@ impl RiffSession {
         // Connecting always starts from nothing attached. Every path that ends a session takes the
         // connection with it, so this is insurance rather than a case that arises today — but
         // replacing one here would leave a socket open that nobody can reach.
-        if let Some(previous) = self.connection.take() {
+        if let Some(previous) = self.connection.replace(None) {
             previous.close(Some("reconnecting".to_owned())).await;
         }
 
@@ -299,7 +303,7 @@ impl RiffSession {
             })
             .await?;
 
-        self.connection = Some(connection.clone());
+        self.connection.replace(Some(connection.clone()));
         self.started_at = Some(self.clock.monotonic_ms());
         self.pending_warnings = EXPIRY_WARNINGS_SECONDS
             .into_iter()
@@ -331,7 +335,7 @@ impl RiffSession {
     /// held across steps: a fresh one per event would cost a timer per event, which on the
     /// thread-backed [`SystemClock`] is a thread per event.
     pub async fn step(&mut self) -> bool {
-        let Some(connection) = self.connection.clone() else {
+        let Some(connection) = self.connection.get() else {
             return false;
         };
 
@@ -341,13 +345,28 @@ impl RiffSession {
             self.warning_timer = Some(self.clock.sleep(delay_ms));
         }
 
-        // The timer is raced first because `race` stops at the first ready future: with the event
-        // stream ahead of it, a session busy enough to matter — continuous audio — would keep an
-        // event ready on every poll and the warning would never be reached.
+        // Ordering is by what must not be starved, because `race` stops at the first ready future.
+        // Commands are the speaker acting, so they go first; the timer next, because a session busy
+        // enough for the warning to matter — continuous audio — would otherwise keep an event ready
+        // on every poll and never reach it.
+        let commands = Arc::clone(&self.commands);
         let mut timer = self.warning_timer.take();
-        let outcome = match timer.as_mut() {
-            None => Either::Right(connection.next_event().await),
-            Some(timer) => race(timer, connection.next_event()).await,
+        let outcome = {
+            let events = async {
+                match timer.as_mut() {
+                    None => Either::Right(connection.next_event().await),
+                    Some(timer) => race(timer, connection.next_event()).await,
+                }
+            };
+            race(commands.next(), Box::pin(events)).await
+        };
+
+        let outcome = match outcome {
+            Either::Left(command) => {
+                self.warning_timer = timer;
+                return self.apply_command(command).await;
+            }
+            Either::Right(outcome) => outcome,
         };
 
         match outcome {
@@ -376,9 +395,41 @@ impl RiffSession {
         }
     }
 
+    /// A cloneable handle for driving the session while [`RiffSession::run`] holds it.
+    ///
+    /// The pump borrows the session for the length of the conversation, which is what keeps the
+    /// engine's state single-owned. A handle is how the microphone and the stop button reach it
+    /// anyway — see [`RiffHandle`] for what goes straight to the connection and what is queued.
+    pub fn control_handle(&self) -> RiffHandle {
+        RiffHandle {
+            connection: Arc::clone(&self.connection),
+            commands: Arc::clone(&self.commands),
+        }
+    }
+
+    /// Carries out what a handle asked for. Returns whether the pump keeps running.
+    async fn apply_command(&mut self, command: Command) -> bool {
+        match command {
+            Command::SendText(text) => {
+                // The utterance reaches the embedder on the event stream, since the handle that
+                // asked for this is not the thing that records it.
+                let _ = self.send_text(&text);
+                true
+            }
+            Command::Interrupt => {
+                self.interrupt();
+                true
+            }
+            Command::Stop(reason) => {
+                self.stop(reason).await;
+                false
+            }
+        }
+    }
+
     /// Records that the connection is gone, whether the provider said so or simply stopped.
     fn close(&mut self, reason: impl Into<String>) {
-        self.connection = None;
+        self.connection.replace(None);
         self.pending_warnings.clear();
         self.warning_timer = None;
         self.set_state(SessionState::Closed);
@@ -405,7 +456,7 @@ impl RiffSession {
         self.set_state(SessionState::Closing);
         self.pending_warnings.clear();
         self.warning_timer = None;
-        if let Some(connection) = self.connection.take() {
+        if let Some(connection) = self.connection.replace(None) {
             connection.close(Some(reason.clone())).await;
         }
         self.set_state(SessionState::Closed);
@@ -416,7 +467,7 @@ impl RiffSession {
 
     /// Captured microphone audio, in the format the provider advertised.
     pub fn send_audio(&self, chunk: &[u8]) {
-        if let Some(connection) = &self.connection {
+        if let Some(connection) = self.connection.get() {
             connection.send_audio(chunk);
         }
     }
@@ -426,7 +477,7 @@ impl RiffSession {
     pub fn send_text(&mut self, text: &str) -> Result<Utterance, String> {
         let connection = self
             .connection
-            .clone()
+            .get()
             .ok_or_else(|| "session is not connected".to_owned())?;
         let at = self.clock.now();
         let utterance = self
@@ -443,7 +494,7 @@ impl RiffSession {
         if !matches!(self.state, SessionState::Speaking | SessionState::Thinking) {
             return;
         }
-        if let Some(connection) = &self.connection {
+        if let Some(connection) = self.connection.get() {
             connection.cancel_response();
         }
         self.emit(RiffEvent::Interrupted);
@@ -548,7 +599,7 @@ impl RiffSession {
                     // Terminal. Leaving the connection attached would keep `run` waiting on a
                     // stream with nothing left to say, and a restart from `failed` would replace a
                     // live connection without ever closing the one it displaced.
-                    if let Some(connection) = self.connection.take() {
+                    if let Some(connection) = self.connection.replace(None) {
                         connection
                             .close(Some("unrecoverable provider error".to_owned()))
                             .await;
@@ -560,7 +611,7 @@ impl RiffSession {
             }
 
             ProviderEvent::Closed { reason } => {
-                self.connection = None;
+                self.connection.replace(None);
                 self.pending_warnings.clear();
                 self.warning_timer = None;
                 self.set_state(SessionState::Closed);
@@ -580,7 +631,7 @@ impl RiffSession {
     /// to continue once per call instead would produce one spoken reply per tool, which sounds like
     /// the agent stuttering.
     async fn run_tools(&mut self, calls: Vec<ToolCallRequest>) {
-        let Some(connection) = self.connection.clone() else {
+        let Some(connection) = self.connection.get() else {
             self.tools_in_flight = false;
             return;
         };
@@ -657,13 +708,10 @@ impl RiffSession {
             agent_version: Some(self.bundle.version.clone()),
             bundle_revision: Some(self.bundle.revision.clone()),
             provider_id: Some(self.provider.id().to_owned()),
-            model: self
-                .connection
-                .as_ref()
-                .map(|connection| connection.model()),
+            model: self.connection.get().map(|connection| connection.model()),
             session_id: self
                 .connection
-                .as_ref()
+                .get()
                 .map(|connection| connection.session_id()),
             duration_ms: self
                 .started_at

@@ -1322,3 +1322,98 @@ fn a_stalled_send_leaves_the_take_where_the_speaker_left_it() {
         "and it is still the take being spoken into"
     );
 }
+
+#[test]
+fn a_handle_drives_the_session_while_the_pump_owns_it() {
+    // `run` borrows the session for the whole conversation, so without this an embedder could not
+    // feed the microphone or answer a stop button while it ran — which is the entire use case.
+    let provider = Arc::new(FakeProvider::default());
+    let host = Arc::new(RecordingHost::default());
+    let bundle = Arc::new(AgentBundle::bundled().expect("the vendored bundle must load"));
+
+    let mut options = RiffSessionOptions::new(bundle, provider.clone());
+    options.host = host;
+    let mut session = RiffSession::new(options);
+    block_on(session.start()).expect("connects");
+
+    let handle = session.control_handle();
+    let connection = provider.connection();
+
+    // Queued from outside, then carried out by the pump: typed input reaches the ledger, and the
+    // stop ends the conversation.
+    handle.send_audio(&[0u8; 320]);
+    handle.send_text("the login page is broken on Safari");
+    handle.stop("the speaker is done");
+
+    block_on(session.run());
+
+    assert_eq!(session.state(), SessionState::Closed);
+    assert_eq!(
+        session.runtime.ledger.all()[0].text,
+        "the login page is broken on Safari"
+    );
+    assert_eq!(
+        session.runtime.ledger.all()[0].source,
+        riff_core::UtteranceSource::Typed
+    );
+
+    let calls = connection.calls();
+    assert!(
+        calls.contains(&Call::Audio(320)),
+        "audio bypasses the queue"
+    );
+    assert!(calls.contains(&Call::Close));
+}
+
+#[test]
+fn a_handle_interrupts_the_agent_mid_answer() {
+    let mut harness = Harness::start();
+    let handle = harness.session.control_handle();
+
+    harness
+        .provider
+        .connection()
+        .emit(riff_core::ProviderEvent::ResponseStarted {
+            response_id: "resp_1".to_owned(),
+        });
+    harness.step();
+    assert_eq!(harness.session.state(), SessionState::Thinking);
+
+    handle.interrupt();
+    harness.step();
+
+    assert!(harness.calls().contains(&Call::Cancel));
+    assert_eq!(harness.session.state(), SessionState::Listening);
+}
+
+#[test]
+fn a_handle_keeps_working_across_a_reconnect() {
+    // The handle is taken once and outlives the connection it was made against, so it has to
+    // resolve the live one rather than the one that existed when it was handed out.
+    let mut harness = Harness::start();
+    let handle = harness.session.control_handle();
+    let first = harness.provider.connection();
+
+    harness
+        .provider
+        .connection()
+        .emit(riff_core::ProviderEvent::Failed {
+            fault: riff_core::ProviderFault::fatal("invalid_request_error", "unknown parameter"),
+        });
+    harness.step();
+    assert_eq!(harness.session.state(), SessionState::Failed);
+
+    block_on(harness.session.start()).expect("a failed session may be restarted");
+    let second = harness.provider.connection();
+    assert!(!Arc::ptr_eq(&first, &second));
+
+    handle.send_audio(&[0u8; 160]);
+    assert!(
+        second.calls().contains(&Call::Audio(160)),
+        "the handle is still pointed at the connection that closed"
+    );
+    assert!(
+        !first.calls().contains(&Call::Audio(160)),
+        "and audio must not reach the dead one"
+    );
+}
