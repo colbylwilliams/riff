@@ -271,6 +271,9 @@ impl RiffSession {
         if let Some(previous) = self.connection.replace(None) {
             previous.close(Some("reconnecting".to_owned())).await;
         }
+        // Commands are scoped to a connection, not to the session object. Anything still queued was
+        // meant for the conversation that ended.
+        self.commands.drain();
 
         for term in self.store.load_lexicon().await.map_err(failed)? {
             self.runtime.lexicon.add(term);

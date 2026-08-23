@@ -71,6 +71,15 @@ impl CommandQueue {
         self.state.lock().unwrap_or_else(|error| error.into_inner())
     }
 
+    /// Throws away anything queued but not yet carried out.
+    ///
+    /// A command belongs to the connection it was queued against. Carrying one over to the next
+    /// would let a stale `SendText` reach a new session's ledger — speech nobody uttered in that
+    /// conversation — and a stale `Stop` close a connection the moment it opened.
+    pub(crate) fn drain(&self) {
+        self.lock().pending.clear();
+    }
+
     fn push(&self, command: Command) {
         let waker = {
             let mut state = self.lock();
@@ -115,6 +124,10 @@ impl Future for NextCommand<'_> {
 /// > held while nothing is calling [`RiffSession::run`] or [`RiffSession::step`] will queue commands
 /// > that are never carried out. The session's own equivalents stay available for an embedder that
 /// > drives it by hand instead.
+///
+/// A handle stays valid across a reconnect, but the commands it queued do not: anything still
+/// waiting when a session ends is dropped rather than carried into the next one. A handle is a way
+/// to reach the conversation that is happening, not a mailbox for the next.
 #[derive(Clone)]
 pub struct RiffHandle {
     pub(crate) connection: Arc<ConnectionSlot>,

@@ -1463,3 +1463,42 @@ fn reports_recalled_prompts_with_the_keys_the_tool_contract_names() {
         "camel case leaked: {prompt:?}"
     );
 }
+
+#[test]
+fn a_restarted_session_does_not_inherit_commands_queued_against_the_last_one() {
+    let mut harness = Harness::start();
+    let handle = harness.session.control_handle();
+
+    // Queued behind the stop, so the pump never reaches them.
+    handle.stop("the speaker is done");
+    handle.send_text("meant for the session that just ended");
+    handle.stop("also stale");
+
+    block_on(harness.session.run());
+    assert_eq!(harness.session.state(), SessionState::Closed);
+
+    block_on(harness.session.start()).expect("a closed session may be restarted");
+
+    // One real event, so the pump has something of its own to take. With the stale commands still
+    // queued it takes those first instead — `race` puts commands ahead of events.
+    harness.say("what they are actually saying now");
+
+    assert_eq!(
+        harness.session.state(),
+        SessionState::Listening,
+        "a stale stop closed the fresh connection"
+    );
+    let ledger: Vec<String> = harness
+        .session
+        .runtime
+        .ledger
+        .all()
+        .iter()
+        .map(|utterance| utterance.text.clone())
+        .collect();
+    assert_eq!(
+        ledger,
+        ["what they are actually saying now"],
+        "the new session inherited speech from the old one"
+    );
+}
