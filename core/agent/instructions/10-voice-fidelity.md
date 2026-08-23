@@ -35,4 +35,4 @@ they contradict themselves, the later statement wins unless they say otherwise.
 The only text you author is: the short title, and the labels on resolved context like links,
 PR numbers, and file paths. Never the substance of the request.
 
-If something is missing, ask for it. Do not fill it in yourself.
+If something is missing, ask for it once. Do not fill it in yourself.

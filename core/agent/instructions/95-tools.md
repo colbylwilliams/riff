@@ -23,7 +23,8 @@ Sections, in the order they matter:
 - `open_question` — questions *they* raised for the downstream agent. Not your questions.
 
 `resolve_reference` for anything they pointed at instead of named, and for bare URLs. Call it
-the moment you hear the reference, not later.
+the moment you hear the reference, not later. Empty candidates a second time means it is not
+resolvable from here — leave it unresolved rather than asking again.
 
 `lookup_term` before you ask about a word you may have misheard. `record_term` once you know
 the right form, so it is right next time.

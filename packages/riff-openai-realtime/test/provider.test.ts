@@ -59,6 +59,69 @@ class FakeWebSocket implements WebSocketLike {
   }
 }
 
+/** Enough turns of the loop that exhausting it means something is wrong, not merely slow. */
+const DELIVERY_ATTEMPTS = 1000;
+
+/**
+ * Resolves once the factory has produced a socket and its open event has fired.
+ *
+ * Polling beats a fixed delay here: nothing in the test controls when the runtime gets to the
+ * timer that opens the fake socket.
+ */
+async function openedSocket(get: () => FakeWebSocket | null): Promise<FakeWebSocket> {
+  for (let attempt = 0; attempt < DELIVERY_ATTEMPTS; attempt += 1) {
+    const socket = get();
+    if (socket && socket.readyState === 1) return socket;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error("the fake socket never opened");
+}
+
+/**
+ * Delivers `message` until `connecting` settles, then hands back its result.
+ *
+ * `connect` registers its message listener only after the socket's open event resolves, and the
+ * transport fans messages out to a listener set that is empty until then — so anything delivered
+ * earlier is parsed and dropped. Delivering once after a fixed delay races that registration and
+ * loses under load, and because the handshake timer is unref'd the loss shows up as the process
+ * exiting with the connect promise still pending rather than as a timeout. Re-delivering until it
+ * settles removes the guess; in the ordinary case the first delivery is the only one.
+ */
+async function settleWith<T>(
+  connecting: Promise<T>,
+  get: () => FakeWebSocket | null,
+  message: unknown,
+): Promise<T> {
+  let pending = true;
+  const tracked = connecting.then(
+    (value) => {
+      pending = false;
+      return value;
+    },
+    (error) => {
+      pending = false;
+      throw error;
+    },
+  );
+  // The caller decides whether a rejection is the expected outcome.
+  tracked.catch(() => {});
+
+  for (let attempt = 0; pending && attempt < DELIVERY_ATTEMPTS; attempt += 1) {
+    get()?.receive(message);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  // Handing back a promise that is still pending would rebuild the failure this helper exists to
+  // prevent — the unref'd handshake timer lets the process exit around it, and the runner reports
+  // a cancelled test with no cause. Fail here instead, where the cause is still in hand.
+  if (pending) {
+    throw new Error(
+      `connect did not settle after ${DELIVERY_ATTEMPTS} deliveries of ${JSON.stringify(message)}`,
+    );
+  }
+  return tracked;
+}
+
 async function connect(): Promise<{ socket: FakeWebSocket; connection: Awaited<ReturnType<OpenAIRealtimeProvider["connect"]>> }> {
   let socket: FakeWebSocket | null = null;
   const provider = new OpenAIRealtimeProvider({
@@ -73,10 +136,12 @@ async function connect(): Promise<{ socket: FakeWebSocket; connection: Awaited<R
     vocabulary: ["Flakeguard"],
   });
 
-  await new Promise((resolve) => setTimeout(resolve, 5));
-  socket!.receive({ type: "session.created", session: { id: "sess_1", model: "gpt-realtime-2.1" } });
+  const connection = await settleWith(connecting, () => socket, {
+    type: "session.created",
+    session: { id: "sess_1", model: "gpt-realtime-2.1" },
+  });
 
-  return { socket: socket!, connection: await connecting };
+  return { socket: socket!, connection };
 }
 
 describe("OpenAIRealtimeProvider", () => {
@@ -176,10 +241,13 @@ describe("OpenAIRealtimeProvider", () => {
       session: bundle.session,
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    socket!.receive({ type: "error", error: { code: "invalid_request_error", message: "bad model" } });
-
-    await assert.rejects(connecting, /bad model/);
+    await assert.rejects(
+      settleWith(connecting, () => socket, {
+        type: "error",
+        error: { code: "invalid_request_error", message: "bad model" },
+      }),
+      /bad model/,
+    );
   });
 
   it("refuses the webrtc transport without a peer connection factory", () => {
@@ -282,8 +350,7 @@ describe("connection teardown", () => {
     });
 
     // Socket open, but session.created never arrives.
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    assert.ok(socket, "the socket should be open by now");
+    await openedSocket(() => socket);
     controller.abort();
 
     await assert.rejects(connecting, /aborted/);

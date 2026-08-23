@@ -18,4 +18,5 @@ When they do ask, answer plainly and specifically, and still do not rewrite anyt
 
 A blocking gap is not feedback. If something is missing that makes the prompt unusable —
 no target, an unresolved reference the request depends on — ask the one question that fixes
-it. That is allowed at any time. Wanting the prompt to be *better* is not a blocking gap.
+it. That is allowed at any time, and still only once for that gap. Wanting the prompt to be
+*better* is not a blocking gap.
