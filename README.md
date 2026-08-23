@@ -1,59 +1,32 @@
 # Riff
 
-Riff is a voice agent that turns thinking out loud into a finished prompt for another agent — in
-the speaker's own words, without them ever having to read it back or edit it.
+Riff is a voice agent that turns thinking out loud into a finished prompt for another agent — in the speaker's own words, without them ever having to read it back or edit it.
 
-You talk. Riff listens, asks the occasional question, quietly looks up the things you pointed at
-instead of naming, and assembles a prompt out of sentences you actually said. When you say "send
-it," it goes.
+You talk. Riff listens, asks the occasional question, quietly looks up the things you pointed at instead of naming, and assembles a prompt out of sentences you actually said. When you say "send it," it goes.
 
 ---
 
 ## The problem
 
-Most of the time now, building software means writing prompts. The agent does the work; the person
-decides what the work is. That makes the prompt the highest-leverage thing a person produces in a
-day, and it is produced under worse conditions than any other artifact they make.
+Building software now means writing prompts. The agent does the work; the person decides what the work is. That makes the prompt the highest-leverage thing a person produces in a day, and it is produced under worse conditions than any other artifact they make.
 
-**Typing is the bottleneck, and voice does not fix it yet.** Speaking is three times faster than
-typing and it is how people already think through a problem. But the current voice workflow is:
-recite a monologue, read the transcript, fix what the recognizer got wrong, restructure it because
-speech is not prose, then submit. The proofreading and editing give back everything the speed
-gained. Worse, the agent on the other side is silent during the part where it could help most — it
-cannot ask "which repo?" until after you have finished and sent.
+**Typing is the bottleneck, and voice does not fix it yet.** Speaking is three times faster than typing, and it is how people already think through a problem. But the current voice workflow — dictate, read it back, fix it, restructure it because speech is not prose — gives back in proofreading everything the speed gained. And the agent that could have asked "which repo?" stays silent until after you have sent.
 
-**Speech recognition breaks on exactly the words that matter.** Ordinary English transcribes fine.
-Product names, repo names, service names, acronyms, and colleagues' names — the load-bearing nouns
-of a technical request — come out as "get hub," "flake guard," "sequel." These are the words the
-downstream agent needs most and the ones the transcript is least likely to get right.
+**Speech recognition breaks on exactly the words that matter.** Ordinary English transcribes fine. Product names, acronyms, and colleagues' names — the load-bearing nouns of a technical request — come out as "get hub," "flake guard," "sequel."
 
-**Half the effort goes into context the person should not have to fetch.** A request usually points
-at something: the PR they just opened, the issue someone filed, the doc from Monday. Either the
-person stops mid-thought to go find the number and the URL, or they leave it vague — "the PR I just
-opened" — and the downstream agent burns time and tokens working out what that meant, sometimes
-wrongly.
+**Half the effort goes into context the person should not have to fetch.** A request usually points at something: the PR they just opened, the doc from Monday. Either they stop mid-thought to go find the number and the URL, or they leave it vague and the downstream agent burns time and tokens working out what that meant, sometimes wrongly.
 
-**People repeat themselves constantly.** "Don't touch the generated files." "Small PRs." "Run the
-linter before you're done." The same standing instructions get retyped into prompt after prompt, and
-get forgotten in exactly the prompts where they mattered.
+**People repeat themselves constantly.** "Small PRs." "Run the linter before you're done." The same standing instructions get retyped into prompt after prompt, and get forgotten in exactly the prompts where they mattered.
 
-**Prompting is iterative, and the tools treat it as one-shot.** Ideas get worked out across several
-drafts. People want to start one prompt, park it, start another, come back. There is nowhere to put
-a half-finished prompt.
+**Prompting is iterative, and the tools treat it as one-shot.** People want to start one prompt, park it, start another, come back. There is nowhere to put a half-finished prompt.
 
-And underneath all of it: **the obvious fix makes things worse.** Handing the transcript to a model
-and asking it to "clean this up" produces a well-organized prompt that is no longer the person's.
-Their hedges are gone, their emphasis is gone, their specific weird word for the thing has been
-replaced by a more standard one. Intent lives in that specificity. A prompt that reads better and
-means something slightly different is a worse prompt, and it fails silently — the person never sees
-what was lost, because they stopped reading it.
+And underneath all of it: **the obvious fix makes things worse.** Handing the transcript to a model and asking it to "clean this up" produces a well-organized prompt that is no longer the person's. The hedges are gone, the emphasis is gone, their specific weird word for the thing has been replaced by a more standard one — and intent lives in that specificity. A prompt that reads better and means something slightly different is a worse prompt, and it fails silently, because the person stopped reading it.
 
 ## What Riff does instead
 
 A short session, start to finish:
 
-> **You** — okay so the export button on the dashboard, it does nothing if you've got more than
-> about a thousand rows. just spins.
+> **You** — okay so the export button on the dashboard, it does nothing if you've got more than about a thousand rows. just spins.
 >
 > **Riff** — *(silent; captures it, starts a draft)*
 >
@@ -88,29 +61,17 @@ just spins. it's related to the PR I just opened.
 
 Three things to notice.
 
-**Every sentence in the body is one the speaker said.** Filler and false starts are gone. Nothing
-was rephrased. "just spins" survived, because that is a real diagnostic detail and a rewriter would
-have dropped it as informal.
+**Every sentence in the body is one the speaker said.** Filler and false starts are gone. Nothing was rephrased. "just spins" survived, because that is a real diagnostic detail and a rewriter would have dropped it as informal.
 
-**The reference was resolved but the sentence was not.** The body still says "the PR I just opened,"
-because that is what they said. The context block says which PR that is. The downstream agent gets
-both.
+**The reference was resolved but the sentence was not.** The body still says "the PR I just opened," because that is what they said. The context block says which PR that is. The downstream agent gets both.
 
-**The constraint arrived in their words**, from a standing instruction Riff had saved earlier, not
-from a policy Riff invented.
+**The constraint arrived in their words**, from a standing instruction Riff had saved earlier, not from a policy Riff invented.
 
 ## How "their words" is enforced
 
-Instructing a model to preserve someone's voice does not work reliably. Models paraphrase; it is
-close to the core of what they do. So in Riff it is not an instruction, it is a gate.
+Instructing a model to preserve someone's voice does not work reliably. Models paraphrase; it is close to the core of what they do. So in Riff it is not an instruction, it is a gate.
 
-Everything the speaker says is recorded in an append-only **utterance ledger**. When the agent wants
-to add a line to the prompt it proposes the text, and the engine checks that line against the
-ledger before it is allowed in. The permitted edit is *deletion*: drop filler, drop a false start,
-drop a whole sentence, fix a word the transcriber got wrong. That means a legitimate line is an
-ordered subsequence of something the speaker actually said, which a longest-common-subsequence
-comparison measures directly — and because it is order-sensitive, it also catches words being
-shuffled inside a sentence, which reads as a rewrite even when every word is theirs.
+Everything the speaker says is recorded in an append-only **utterance ledger**. When the agent wants to add a line to the prompt it proposes the text, and the engine checks that line against the ledger before it is allowed in. The permitted edit is *deletion*: drop filler, drop a false start, drop a whole sentence, fix a word the transcriber got wrong. A legitimate line is therefore an ordered subsequence of something the speaker actually said — a property a machine can measure, and one that still catches a rewrite assembled entirely out of words they used.
 
 Lines that fail are rejected, and the rejection tells the model which words it invented:
 
@@ -120,10 +81,7 @@ they did not say "csv", "functionality", "silently"; use their words or ask them
 
 The model then puts their words back, or asks. The speaker sees none of this.
 
-Two consequences worth calling out. Fidelity becomes a **number** — the token-weighted share of the
-prompt that is provably the speaker's — carried on every artifact, so a consumer can tell whether a
-prompt was captured or composed without reading it. And the property survives model swaps: a
-different, chattier model produces the same guarantee, because the guarantee is not in the prompt.
+Two consequences worth calling out. Fidelity becomes a **number** — the token-weighted share of the prompt that is provably the speaker's — carried on every artifact, so a consumer can tell whether a prompt was captured or composed without reading it. And the property survives model swaps: a different, chattier model produces the same guarantee, because the guarantee is not in the prompt.
 
 See [docs/grounding.md](docs/grounding.md) for the algorithm and its edge cases.
 
@@ -131,104 +89,73 @@ See [docs/grounding.md](docs/grounding.md) for the algorithm and its edge cases.
 
 - **Faithful.** The prompt body is the speaker's words. Fidelity is measured, not asserted.
 - **Finished.** The output is submittable as-is. No proofread step, no edit step.
-- **Out of the way.** Riff asks only when the answer changes what the downstream agent does, and
-  gives feedback only when asked.
-- **Resolved.** References, links, prior prompts, and domain vocabulary are looked up during the
-  conversation rather than left for the downstream agent.
-- **Interruptible.** Backtracking, corrections, tangents, and talking over the agent are normal
-  input, not error cases.
-- **Portable.** One shared agent definition, one shared engine contract, native bindings per
-  platform, and a conformance suite that proves they agree.
+- **Out of the way.** Riff asks only when the answer changes what the downstream agent does, and gives feedback only when asked.
+- **Resolved.** References, links, prior prompts, and domain vocabulary are looked up during the conversation rather than left for the downstream agent.
+- **Interruptible.** Backtracking, corrections, tangents, and talking over the agent are normal input, not error cases.
+- **Portable.** One shared agent definition, one shared engine contract, native bindings per platform, and a conformance suite that proves they agree.
 
 ## Non-goals
 
-- **Riff does not do the work.** It never proposes an implementation, a design, a library, a file to
-  change, or a sequence of steps, and it will not write code. That belongs to the agent downstream.
-  This boundary is the difference between a prompting tool and a second, worse coding agent.
-- **Riff does not improve your prompt.** It will not make you sound more professional, more
-  technical, or more concise. It captures; it does not edit.
+- **Riff does not do the work.** It never proposes an implementation, a design, a library, a file to change, or a sequence of steps, and it will not write code. That belongs to the agent downstream. This boundary is the difference between a prompting tool and a second, worse coding agent.
+- **Riff does not improve your prompt.** It will not make you sound more professional, more technical, or more concise. It captures; it does not edit.
 - **Riff is not a chat interface.** It has no opinion on your idea and does not want to discuss it.
-- **Riff does not decide when to send.** There is no auto-submit, and the configuration that would
-  enable one is rejected at load time.
-- **Riff is not an app.** It is a library, embedded into applications that supply the microphone,
-  the screen, and the world it looks things up in.
+- **Riff does not decide when to send.** There is no auto-submit, and the configuration that would enable one is rejected at load time.
+- **Riff is not an app.** It is a library, embedded into applications that supply the microphone, the screen, and the world it looks things up in.
 
 ## Architecture
 
 Two seams, and everything interesting sits between them.
 
 ```mermaid
-flowchart TB
-    subgraph app["Embedding application"]
-        mic["Microphone and playback"]
-        ui["Draft, transcript, controls"]
-    end
+flowchart LR
+    provider["RealtimeProvider<br>the speech engine"]
+    host["RiffHost<br>the world you point at"]
+    riff["Riff<br>ledger · grounding<br>drafts · takes"]
+    downstream["The agent<br>that does the work"]
 
-    subgraph riff["Riff"]
-        session["Session — state, turns, tool dispatch"]
-        ledger["Utterance ledger — what was said"]
-        grounding["Grounding check — may this line go in?"]
-        draft["Takes and drafts"]
-        artifact["Prompt artifact + provenance"]
-    end
-
-    subgraph agent["Shared agent definition"]
-        instr["Instructions"]
-        tools["Tool contracts"]
-        cfg["Session defaults + lexicon"]
-    end
-
-    provider["RealtimeProvider — OpenAI Realtime, or another"]
-    host["RiffHost — references, terms, prior prompts, destinations"]
-    downstream["The agent that does the work"]
-
-    mic --> session
-    session <--> provider
-    session --> ledger --> grounding --> draft --> artifact
-    session <--> host
-    agent --> session
-    artifact --> downstream
-    session --> ui
+    provider <--> riff
+    host <--> riff
+    riff -- prompt artifact --> downstream
 ```
 
-**`RealtimeProvider`** is everything that produces speech-to-speech: move audio, report what was
-heard, relay tool calls. Nothing above it knows any provider's wire format, which is what lets the
-speech engine change without changing a single thing a speaker can observe.
+**`RealtimeProvider`** is everything that produces speech-to-speech: move audio, report what was heard, relay tool calls. Nothing above it knows any provider's wire format, which is what lets the speech engine change without changing a single thing a speaker can observe.
 
-**`RiffHost`** is everything world-shaped: what "the PR I just opened" refers to, what an acronym
-means here, what they asked for last week, where a finished prompt goes. Riff knows how to keep a
-prompt in someone's voice; it does not know what their world contains. This is why the same agent
-works in an editor, a terminal, a phone, and a design tool.
+**`RiffHost`** is everything world-shaped: what "the PR I just opened" refers to, what an acronym means here, what they asked for last week, where a finished prompt goes. Riff knows how to keep a prompt in someone's voice; it does not know what their world contains. This is why the same agent works in an editor, a terminal, a phone, and a design tool.
 
-Between them sits the part that is genuinely Riff: the ledger, the grounding check, drafts, takes,
-and the artifact. That layer is implemented natively per platform and is held to a shared
-conformance suite.
+Between them sits the part that is genuinely Riff, implemented natively per platform and held to a shared conformance suite.
 
-The **agent definition** — instructions, tool contracts, session defaults, seed lexicon — lives in
-`core/agent` as plain files and compiles to a single bundle that every binding loads. Changing how
-Riff behaves is a change to markdown and JSON, not to Swift and TypeScript in parallel.
+<details>
+<summary>Inside that middle layer</summary>
+
+Speech and typed input are the only things that reach the ledger. Everything else the session sees — tool results, host data, what the model itself says — can inform the prompt but can never become it.
+
+```mermaid
+flowchart LR
+    said["What the speaker said"] --> ledger["Utterance ledger"] --> check
+    proposed["A line the agent<br>wants to add"] --> check{"Grounding<br>check"}
+    check -- passes --> draft["Draft"] --> artifact["Prompt artifact<br>+ provenance"]
+    check -- rejected --> retry["Put their words back,<br>or ask them"]
+```
+
+</details>
+
+The **agent definition** — instructions, tool contracts, session defaults, seed lexicon — lives in `core/agent` as plain files and compiles to a single bundle that every binding loads. Changing how Riff behaves is a change to markdown and JSON, not to Swift and TypeScript in parallel.
 
 More in [docs/architecture.md](docs/architecture.md).
 
 ## Ideas worth naming
 
-- **Utterance ledger** — append-and-revise record of everything said. The only thing the prompt body
-  may draw from.
-- **Grounding check** — the gate described above. Configurable per section; strict everywhere by
-  default.
-- **Takes** — a session holds several drafts. Change subject and Riff parks the old one instead of
-  destroying it. Come back to it later.
-- **Motifs** — standing instructions saved once, in the speaker's own words, and reattached when
-  they apply. Because they are captured verbatim, reuse cannot flatten anyone's voice.
-- **Lexicon** — domain vocabulary that transcription gets wrong. Feeds transcription biasing at
-  connect time, and lets the grounding check see that "get hub" and "GitHub" are the same word.
-  Grows as the agent learns; corrections apply to both sides of every comparison, so an alias can
-  never make a paraphrase look grounded.
-- **Prompt artifact** — the output, carrying the rendered prompt, the resolved context, the terms
-  used, and provenance including the fidelity score. Schema in
-  [`core/schema/prompt-artifact.schema.json`](core/schema/prompt-artifact.schema.json).
+- **Utterance ledger** — append-and-revise record of everything said. The only thing the prompt body may draw from.
+- **Grounding check** — the gate described above. Configurable per section; strict everywhere by default.
+- **Takes** — a session holds several drafts. Change subject and Riff parks the old one instead of destroying it. Come back to it later.
+- **Motifs** — standing instructions saved once, in the speaker's own words, and reattached when they apply. Because they are captured verbatim, reuse cannot flatten anyone's voice.
+- **Lexicon** — domain vocabulary that transcription gets wrong. Feeds transcription biasing at connect time, and lets the grounding check see that "get hub" and "GitHub" are the same word. Corrections apply to both sides of every comparison, so an alias can never make a paraphrase look grounded.
+- **Prompt artifact** — the output, carrying the rendered prompt, the resolved context, the terms used, and provenance including the fidelity score. Schema in [`prompt-artifact.schema.json`](core/schema/prompt-artifact.schema.json).
 
 ## Repository layout
+
+<details>
+<summary><code>core/</code> · <code>packages/</code> · <code>swift/</code> · <code>tools/</code> · <code>examples/</code> · <code>docs/</code></summary>
 
 ```
 core/
@@ -251,6 +178,8 @@ examples/
 docs/
 ```
 
+</details>
+
 ## Getting started
 
 The fastest way to see what this does is to run the demo, which needs no API key:
@@ -262,12 +191,11 @@ npm run demo                     # http://localhost:4173
 
 It replays the conversation above through the real engine — real ledger, real grounding check, real render — and shows the draft assembling itself line by line, including a paraphrase being rejected. Click **keys** in the page to paste an OpenAI key and talk to it yourself, or a GitHub token to have it resolve references against a real repository. See [examples/riff-web](examples/riff-web).
 
-### TypeScript
+<details>
+<summary>Embedding it — TypeScript</summary>
 
 ```bash
-npm install
-npm run build
-npm test
+npm install && npm run build && npm test
 ```
 
 ```ts
@@ -299,7 +227,10 @@ await session.start();
 microphone.on("chunk", (pcm) => session.sendAudio(pcm));
 ```
 
-### Swift
+</details>
+
+<details>
+<summary>Embedding it — Swift</summary>
 
 ```bash
 swift test --package-path swift
@@ -335,36 +266,29 @@ for await event in session.events {
 }
 ```
 
-Hold a strong reference to the session for as long as it is connected. Releasing it tears the
-connection down, by design — a half-live session with an open microphone is worse than a closed one.
+Hold a strong reference to the session for as long as it is connected. Releasing it tears the connection down, by design — a half-live session with an open microphone is worse than a closed one.
+
+</details>
 
 ## Testing
 
 ```bash
-npm test                      # 97 tests: engine, provider, host, conformance
+npm test                          # engine, provider, host, conformance
 swift test --package-path swift   # the same conformance suite, natively
 ```
 
-The conformance cases in [`core/conformance`](core/conformance) are data, not code, and both
-implementations execute them. They pin the behavior that has to be identical everywhere: which lines
-are grounded and which are rejected, and the exact bytes a finished prompt renders to. A prompt
-captured on a phone and one captured at a desk are held to the same standard and come out the same.
+The conformance cases in [`core/conformance`](core/conformance) are data, not code, and both implementations execute them. They pin the behavior that has to be identical everywhere: which lines are grounded and which are rejected, and the exact bytes a finished prompt renders to. A prompt captured on a phone and one captured at a desk come out the same.
 
-`npm test` also fails if the committed agent bundle has drifted from `core/agent`, so the definition
-Swift ships can never fall behind the one TypeScript ships.
+`npm test` also fails if the committed agent bundle has drifted from `core/agent`, so the definition Swift ships can never fall behind the one TypeScript ships.
 
 See [docs/conformance.md](docs/conformance.md) for how to add a binding.
 
 ## Security and privacy
 
-- **No long-lived credential on a client.** Devices connect with ephemeral secrets minted by your
-  backend. `mintClientSecret` is the only part of the provider that must stay server-side.
-- **Audio is not persisted.** Riff keeps transcripts, because the prompt is built from them; it does
-  not keep the recording.
-- **Credentials are stripped from transcripts** before anything is stored — tokens and API keys that
-  arrive through typed input never reach the ledger, the draft, or the model.
-- **Nothing is fetched that was not referred to.** Riff resolves references through the host and
-  records links; it does not crawl.
+- **No long-lived credential on a client.** Devices connect with ephemeral secrets minted by your backend. `mintClientSecret` is the only part of the provider that must stay server-side.
+- **Audio is not persisted.** Riff keeps transcripts, because the prompt is built from them; it does not keep the recording.
+- **Credentials are stripped from transcripts** before anything is stored — tokens and API keys that arrive through typed input never reach the ledger, the draft, or the model.
+- **Nothing is fetched that was not referred to.** Riff resolves references through the host and records links; it does not crawl.
 
 Details and the threat model in [docs/security.md](docs/security.md).
 
