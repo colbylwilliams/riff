@@ -414,6 +414,12 @@ export class DraftBook {
     const take = new Take(`t${++this.#sequence}`, this.#now(), label);
     if (carryContextFrom) for (const item of carryContextFrom.context()) take.attachContext(item);
     this.#takes.set(take.id, take);
+
+    // Starting a new take sets the outgoing one aside rather than leaving it marked as being
+    // drafted, which is what `60-corrections` promises: they can come back to the parked one.
+    const previous = this.#activeId ? this.#takes.get(this.#activeId) : undefined;
+    if (previous && previous.status === "drafting") previous.status = "parked";
+
     this.#activeId = take.id;
     return take;
   }

@@ -480,6 +480,13 @@ public final class DraftBook: @unchecked Sendable {
         for item in source?.context() ?? [] { take.attach(item) }
         takesById[take.id] = take
         order.append(take.id)
+
+        // Starting a new take sets the outgoing one aside rather than leaving it marked as being
+        // drafted, which is what `60-corrections` promises: they can come back to the parked one.
+        if let activeId, let previous = takesById[activeId], previous.status == .drafting {
+            previous.status = .parked
+        }
+
         activeId = take.id
         return take
     }

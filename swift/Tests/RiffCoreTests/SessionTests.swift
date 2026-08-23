@@ -453,6 +453,52 @@ struct SessionTests {
         #expect(session.book.take(submittedTakeId)?.status == .submitted)
     }
 
+    @Test("parks a take and starts a new one when the subject changes")
+    func newTakeParksTheOutgoingOne() async throws {
+        let (session, provider, _, _) = try await makeSession()
+        defer { withExtendedLifetime(session) {} }
+
+        provider.connection.say("the export button is broken")
+        await settle()
+        let drafted = provider.connection.callTool("draft_update", .object([
+            "operations": .array([
+                .object([
+                    "op": .string("upsert_line"),
+                    "section": .string("intent"),
+                    "text": .string("the export button is broken"),
+                ]),
+            ]),
+        ]))
+        _ = try await provider.connection.result(for: drafted)
+        let firstTake = try #require(session.book.activeId)
+
+        let created = provider.connection.callTool("takes", .object([
+            "action": .string("new"), "label": .string("avatars"),
+        ]))
+        let secondTake = try #require(try await provider.connection.result(for: created)["take_id"]?.stringValue)
+
+        #expect(firstTake != secondTake)
+        // `60-corrections` tells the speaker they can come back to the parked one, so starting a
+        // take has to leave the outgoing one parked rather than still marked as being drafted.
+        #expect(session.book.take(firstTake)?.status == .parked)
+        #expect(session.book.take(secondTake)?.status == .drafting)
+
+        // Both prompts are open at once, and the parked one is readable without becoming active.
+        let parked = try session.artifact(takeId: firstTake)
+        #expect(parked?.takeId == firstTake)
+        #expect(parked?.lines.count == 1)
+        #expect(try session.artifact()?.takeId == secondTake)
+        #expect(try session.artifact()?.lines.isEmpty == true)
+
+        let switched = provider.connection.callTool("takes", .object([
+            "action": .string("switch"), "take_id": .string(firstTake),
+        ]))
+        let draft = try await provider.connection.result(for: switched)["draft"]
+        #expect(draft?["sections"]?["intent"]?.arrayValue?.count == 1)
+        #expect(session.book.take(firstTake)?.status == .drafting)
+        #expect(session.book.take(secondTake)?.status == .parked)
+    }
+
     @Test("keeps the event stream alive across a restart")
     func restartKeepsEmitting() async throws {
         let (session, provider, _, _) = try await makeSession()

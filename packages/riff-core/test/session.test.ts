@@ -258,7 +258,7 @@ describe("RiffSession", () => {
       operations: [{ op: "upsert_line", section: "intent", text: "the export button is broken" }],
     });
     await settle();
-    const firstTake = session.book.activeId;
+    const firstTake = session.book.activeId!;
 
     const created = provider.callTool("takes", { action: "new", label: "avatars" });
     await settle();
@@ -266,10 +266,22 @@ describe("RiffSession", () => {
 
     assert.notEqual(firstTake, secondTake);
     assert.equal(session.artifact()?.lines.length, 0);
+    // `60-corrections` tells the speaker they can come back to the parked one, so starting a take
+    // has to leave the outgoing one parked rather than still marked as being drafted.
+    assert.equal(session.book.get(firstTake)?.status, "parked");
+    assert.equal(session.book.get(secondTake)?.status, "drafting");
+
+    // Both prompts are open at once, and the parked one is readable without becoming active.
+    const parked = session.artifact(firstTake);
+    assert.equal(parked?.takeId, firstTake);
+    assert.equal(parked?.lines.length, 1);
+    assert.equal(session.artifact()?.takeId, secondTake);
 
     const switched = provider.callTool("takes", { action: "switch", take_id: firstTake });
     await settle();
     assert.equal(provider.resultFor(switched).draft.sections.intent.length, 1);
+    assert.equal(session.book.get(firstTake)?.status, "drafting");
+    assert.equal(session.book.get(secondTake)?.status, "parked");
   });
 
   it("submits only what was captured, with provenance attached", async () => {

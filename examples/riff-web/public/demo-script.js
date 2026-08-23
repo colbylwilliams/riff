@@ -1,5 +1,6 @@
 /**
- * The conversation from the README, as data.
+ * The conversation from the README, as data, with one beat the README leaves out: a subject change
+ * partway through, which opens a second prompt and parks the first.
  *
  * Nothing here is a mock of Riff. Every `user` line goes through the real ledger and every `tools`
  * step is dispatched by the real tool registry, so the draft on screen is produced by the same code
@@ -58,6 +59,43 @@ export const DEMO_SCRIPT = [
         },
       },
     ],
+  },
+
+  {
+    user: "oh, separate thing, the onboarding doc still says node sixteen. different thing entirely.",
+  },
+
+  // The point of the beat. A different request is a different prompt, so the export one is parked
+  // rather than overwritten, and both stay open until one of them is sent.
+  {
+    note: "a different request, so it becomes its own take and the export one is parked",
+    tools: [
+      { name: "takes", args: { action: "new", label: "onboarding doc" } },
+      {
+        name: "draft_update",
+        args: {
+          operations: [
+            { op: "set_title", text: "the onboarding doc" },
+            {
+              op: "upsert_line",
+              section: "intent",
+              text: "the onboarding doc still says node sixteen",
+            },
+          ],
+        },
+      },
+    ],
+  },
+
+  { agent: "that's a new one. the export thing is parked." },
+
+  { user: "yeah, let's finish the export one first" },
+
+  // `t1` is what the model would have remembered from starting the second take, not something the
+  // script knows about the engine: take ids are handed back by every `takes` and `draft_update` call.
+  {
+    note: "back to the parked take; the onboarding one keeps its line",
+    tools: [{ name: "takes", args: { action: "switch", take_id: "t1" } }],
   },
 
   { user: "and it's related to the PR I just opened I think" },

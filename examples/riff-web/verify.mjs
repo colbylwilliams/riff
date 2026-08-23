@@ -79,6 +79,28 @@ assert.equal(artifact.context[0].resolvedFrom, "the PR I just opened");
 assert.equal(artifact.lines.filter((line) => line.grounding.kind === "motif").length, 1);
 assert.equal(host.submitted.length, 1, "the host should have received the artifact exactly once");
 
+// Two prompts were open at once. A subject change starts a second take rather than overwriting the
+// first, switching back leaves both intact, and sending one does not disturb the other.
+const takes = session.takes();
+assert.equal(takes.length, 2, "the subject change should have opened a second take");
+
+const [exported, onboarding] = takes;
+assert.equal(artifact.takeId, exported.id, "the export take is the one that was sent");
+assert.equal(exported.status, "submitted");
+assert.equal(onboarding.status, "parked", "the take they set aside is still waiting for them");
+assert.equal(onboarding.label, "onboarding doc");
+assert.deepEqual(
+  onboarding.lines().map((line) => line.text),
+  ["the onboarding doc still says node sixteen"],
+  "the parked take should hold its own line and nothing from the one that was sent",
+);
+assert.ok(
+  !artifact.lines.some((line) => line.text.includes("onboarding")),
+  "the tangent should never have reached the prompt that was sent",
+);
+// Naming a take is how an embedder shows a prompt that is not the one being spoken into.
+assert.equal(session.artifact(onboarding.id)?.takeId, onboarding.id);
+
 // The agent names what the host actually found rather than an id written into the script.
 const spoken = events.findLast((event) => event.type === "agent.transcript" && event.final);
 assert.equal(spoken?.text, "that's 412, chunked uploads.");

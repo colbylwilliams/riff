@@ -13,12 +13,13 @@ import { observeProvider } from "./observe-provider.js";
 
 const ui = {
   statePill: document.getElementById("state-pill"),
-  takeLabel: document.getElementById("take-label"),
   ring: document.getElementById("ring-value"),
   fidelityNumber: document.getElementById("fidelity-number"),
   ledger: document.getElementById("ledger"),
   utteranceCount: document.getElementById("utterance-count"),
   pending: document.getElementById("pending"),
+  takes: document.getElementById("takes"),
+  takesHint: document.getElementById("takes-hint"),
   draft: document.getElementById("draft"),
   markdown: document.getElementById("markdown"),
   toggleMarkdown: document.getElementById("toggle-markdown"),
@@ -84,6 +85,23 @@ let lastSubmission = null;
 let agentEntry = null;
 let liveAvailable = false;
 let githubAvailable = false;
+/**
+ * The session whose prompts are on screen.
+ *
+ * Held past the end of a run, unlike `run`. A closed session still knows everything it drafted, and
+ * dropping it on stop would empty the pane the moment someone clicked one of the prompts to read it.
+ */
+let shown = null;
+/**
+ * Which take the prompt pane is showing.
+ *
+ * A session holds several unsent prompts, so "the draft" is a choice. It follows whichever one Riff
+ * is writing into, until someone opens a parked one to read — which changes what is on screen and
+ * nothing else. Deciding which take is being written into is Riff's job, from what it hears.
+ */
+let viewingTakeId = null;
+/** Set once someone picks a mode, so a later key change does not move the selection under them. */
+let modeChosen = false;
 /** The id the host gave the last thing it resolved, so the script can attach what was found. */
 let lastReferenceId = null;
 let lastReferenceSpoken = null;
@@ -124,6 +142,7 @@ async function start() {
 
   started.id = id;
   run = started;
+  shown = started.session;
   started.session.on((event) => {
     if (id === runSequence) handleEvent(event);
   });
@@ -286,12 +305,16 @@ function handleEvent(event) {
       break;
 
     case "draft":
-      setFidelity(event.fidelity);
-      renderDraft(run?.session.artifact());
+      // The pane follows the take being written into, unless a parked one is open to read.
+      if (viewingTakeId === null || viewingTakeId === event.takeId) showTake(event.takeId);
+      else renderTakes();
       break;
 
     case "take":
-      ui.takeLabel.textContent = event.takeId ? `take ${event.takeId}` : "";
+      // A null take means nothing is active and the next thing said starts a fresh one — which
+      // happens right after a send, when the prompt that just went out is still worth looking at.
+      if (event.takeId) showTake(event.takeId);
+      else renderTakes();
       break;
 
     case "agent.transcript":
@@ -315,8 +338,7 @@ function handleEvent(event) {
 
     case "submitted":
       lastArtifact = event.artifact;
-      renderDraft(event.artifact);
-      setFidelity(event.artifact.provenance.fidelity);
+      showTake(event.artifact.takeId);
       showSent();
       break;
 
@@ -432,25 +454,73 @@ function addUtterance(utterance) {
   item.scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
 
+/**
+ * The open prompts, and which of them is on screen.
+ *
+ * Hidden until there is more than one: a single draft needs no chooser, and the strip appearing is
+ * itself the signal that a second prompt was started.
+ */
+function renderTakes() {
+  const takes = shown?.takes() ?? [];
+  const activeId = shown?.book.activeId ?? null;
+
+  ui.takes.hidden = takes.length < 2;
+  ui.takesHint.hidden = ui.takes.hidden;
+  ui.takes.replaceChildren();
+  if (ui.takes.hidden) return;
+
+  for (const take of takes) {
+    const status = takeStatus(take, activeId);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "take";
+    button.dataset.status = status;
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-selected", String(take.id === viewingTakeId));
+    button.title =
+      status === "live"
+        ? "The prompt the next thing said lands in"
+        : "Set aside. Say so and Riff comes back to it";
+
+    button.append(span(take.label ?? take.title?.text ?? take.id), span(status, "take-status"));
+    button.addEventListener("click", () => showTake(take.id));
+    ui.takes.append(button);
+  }
+}
+
+/** Engine status in the viewer's terms, with the active take called out as the one being written to. */
+function takeStatus(take, activeId) {
+  if (take.id === activeId) return "live";
+  if (take.status === "submitted") return "sent";
+  if (take.status === "discarded") return "dropped";
+  return "parked";
+}
+
+/** Puts one take on screen. Which take Riff is writing into is unaffected. */
+function showTake(takeId) {
+  viewingTakeId = takeId;
+  const artifact = takeId ? (shown?.artifact(takeId) ?? null) : null;
+  renderDraft(artifact);
+  setFidelity(artifact?.provenance.fidelity ?? 0);
+  renderTakes();
+}
+
 function renderDraft(artifact) {
-  if (artifact) lastArtifact = artifact;
-  const current = artifact ?? lastArtifact;
-
   ui.draft.replaceChildren();
-  ui.markdown.textContent = current?.rendered ?? "";
+  ui.markdown.textContent = artifact?.rendered ?? "";
 
-  if (!current || current.lines.length === 0) {
+  if (!artifact || artifact.lines.length === 0) {
     ui.draft.append(paragraph("Nothing captured yet.", "hint"));
     return;
   }
 
   const title = document.createElement("h3");
   title.className = "draft-title";
-  title.textContent = current.title.text;
+  title.textContent = artifact.title.text;
   ui.draft.append(title);
 
   for (const section of SECTIONS) {
-    const lines = current.lines.filter((line) => line.section === section);
+    const lines = artifact.lines.filter((line) => line.section === section);
     if (lines.length === 0) continue;
 
     const block = document.createElement("div");
@@ -466,10 +536,10 @@ function renderDraft(artifact) {
     ui.draft.append(block);
   }
 
-  if (current.context.length > 0) {
+  if (artifact.context.length > 0) {
     const context = document.createElement("div");
     context.className = "context";
-    for (const item of current.context) context.append(renderContext(item));
+    for (const item of artifact.context) context.append(renderContext(item));
     ui.draft.append(context);
   }
 }
@@ -645,6 +715,14 @@ function applyConfig(config) {
     ui.micLabel.textContent = defaultMicLabel();
   }
 
+  // With both credentials on the server there is a real conversation to have against a real
+  // repository, so that is what the demo opens on. Only until someone picks for themselves: moving
+  // the selection under them after that is worse than starting on the mode they did not want.
+  if (liveAvailable && githubAvailable && !modeChosen && !run) {
+    liveInput.checked = true;
+    ui.micLabel.textContent = defaultMicLabel();
+  }
+
   const repository = config.github?.repository;
   ui.hostPill.textContent = githubAvailable ? `host: ${repository}` : "host: demo";
   ui.hostPill.title = githubAvailable
@@ -762,11 +840,14 @@ function reset() {
   lastReferenceId = null;
   lastReferenceSpoken = null;
   agentEntry = null;
+  shown = null;
+  viewingTakeId = null;
   ui.ledger.replaceChildren();
   ui.activity.replaceChildren();
   ui.utteranceCount.textContent = "0";
   closeSheet(ui.sent);
   setFidelity(0);
+  renderTakes();
   renderDraft(null);
 }
 
@@ -858,7 +939,12 @@ ui.typeForm.addEventListener("submit", (event) => {
 });
 
 for (const input of document.querySelectorAll('input[name="mode"]')) {
-  input.addEventListener("change", () => (ui.micLabel.textContent = defaultMicLabel()));
+  input.addEventListener("change", () => {
+    // Only a real click lands here — setting `checked` from script fires no `change` — so this is
+    // exactly the signal `applyConfig` needs to stop choosing a mode on their behalf.
+    modeChosen = true;
+    ui.micLabel.textContent = defaultMicLabel();
+  });
 }
 
 // Live mode needs a key on the server, so say so up front rather than failing on the first click.
@@ -867,5 +953,6 @@ const config = await fetch("/api/riff/config")
   .catch(() => ({ live: false }));
 
 applyConfig(config);
+renderTakes();
 renderDraft(null);
 setFidelity(0);
