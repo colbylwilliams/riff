@@ -163,6 +163,12 @@ fn unsupported_keyword(schema: &Json) -> Option<&str> {
             return Some(key);
         }
         match key {
+            // `additionalProperties: false` is a rule the validator enforces; a *schema* there is a
+            // rule it would drop on the floor, so it is refused for the same reason a keyword it
+            // has never heard of is.
+            "additionalProperties" if value.as_object().is_some() => {
+                return Some("additionalProperties as a schema");
+            }
             "properties" => {
                 if let Some(properties) = value.as_object() {
                     for (_, child) in properties.iter() {
@@ -584,6 +590,29 @@ mod tests {
     fn refuses_an_undefined_render_profile() {
         let modified = BUNDLED_AGENT.replace("\"profile\": \"prose\"", "\"profile\": \"nope\"");
         assert!(AgentBundle::parse(&modified).is_err());
+    }
+
+    #[test]
+    fn refuses_additional_properties_it_would_have_to_ignore() {
+        // The boolean form is a rule the validator applies. A schema there is a rule it would drop,
+        // which is the thing the whole scanner exists to prevent.
+        let modified = BUNDLED_AGENT.replace(
+            "\"additionalProperties\": false",
+            "\"additionalProperties\": { \"type\": \"string\" }",
+        );
+        let error =
+            AgentBundle::parse(&modified).expect_err("a schema-valued form must be refused");
+        assert!(
+            error.to_string().contains("additionalProperties"),
+            "got {error}"
+        );
+
+        // `true` says nothing the validator has to enforce, so it loads.
+        let permissive = BUNDLED_AGENT.replace(
+            "\"additionalProperties\": false",
+            "\"additionalProperties\": true",
+        );
+        assert!(AgentBundle::parse(&permissive).is_ok());
     }
 
     #[test]

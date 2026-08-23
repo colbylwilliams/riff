@@ -265,13 +265,18 @@ fn fallback_title(take: &Take) -> String {
     let Some(first) = first else {
         return "Untitled".to_owned();
     };
-    let words = first
+    let mut words = first
         .text
         .split_whitespace()
         .take(8)
         .collect::<Vec<_>>()
         .join(" ");
-    words.trim_end_matches([',', '.', ';', ':']).to_owned()
+    // Exactly one, matching the anchored single-character replacement the other bindings use. An
+    // intent trailing off in an ellipsis derives "Fix this.." everywhere, or nowhere.
+    if words.ends_with([',', '.', ';', ':']) {
+        words.pop();
+    }
+    words
 }
 
 /// A one or two sentence account of what the draft covers, for when they ask how it is looking.
@@ -321,4 +326,67 @@ pub fn summarize_draft(take: &Take) -> String {
     format!("{opening}Captured {described}.{attached}")
         .trim()
         .to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::draft::Anchor;
+    use crate::types::{GroundingKind, LineGrounding};
+
+    fn take_with(intent: &str) -> Take {
+        let mut take = Take::new("t1", "1970-01-01T00:00:00.000Z", None);
+        let id = take.next_line_id();
+        let order = take.order_after(Section::Intent, &Anchor::End);
+        take.set_line(Line {
+            id,
+            section: Section::Intent,
+            text: intent.to_owned(),
+            order,
+            source_utterance_ids: Vec::new(),
+            motif_id: None,
+            supersedes: Vec::new(),
+            grounding: LineGrounding::full(GroundingKind::Verbatim),
+        });
+        take
+    }
+
+    #[test]
+    fn a_derived_title_drops_one_trailing_mark_not_a_run_of_them() {
+        // The other bindings apply an anchored single-character replacement, so a title has to lose
+        // exactly one mark here too or the same draft yields different artifacts.
+        assert_eq!(
+            fallback_title(&take_with("fix the uploader.")),
+            "fix the uploader"
+        );
+        assert_eq!(
+            fallback_title(&take_with("fix the uploader...")),
+            "fix the uploader.."
+        );
+        assert_eq!(
+            fallback_title(&take_with("fix the uploader,")),
+            "fix the uploader"
+        );
+        assert_eq!(
+            fallback_title(&take_with("fix the uploader")),
+            "fix the uploader"
+        );
+    }
+
+    #[test]
+    fn a_derived_title_keeps_the_first_eight_words() {
+        let take = take_with("one two three four five six seven eight nine ten");
+        assert_eq!(
+            fallback_title(&take),
+            "one two three four five six seven eight"
+        );
+    }
+
+    #[test]
+    fn an_empty_take_is_untitled() {
+        assert_eq!(
+            fallback_title(&Take::new("t1", "1970-01-01T00:00:00.000Z", None)),
+            "Untitled"
+        );
+    }
 }

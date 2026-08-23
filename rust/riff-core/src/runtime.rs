@@ -6,7 +6,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -32,8 +32,10 @@ pub trait Clock: Send + Sync {
 
 /// The default clock: the system time, and a thread per delay.
 ///
-/// A thread per delay is fine for the handful of timers a session uses, and it is the only way to
-/// wait without a runtime. An embedder that already has one should implement [`Clock`] over it.
+/// A thread per delay is the only way to wait without a runtime. The thread is woken when the delay
+/// is dropped rather than sleeping out a deadline nobody is waiting for, so a session that closes
+/// early does not leave one parked for the rest of its hour. An embedder that already has a runtime
+/// should still implement [`Clock`] over its timer.
 #[derive(Debug)]
 pub struct SystemClock {
     started: Instant,
@@ -111,15 +113,34 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     (year + i64::from(month <= 2), month, day)
 }
 
+/// A delay backed by one parked thread, which wakes early when the delay is dropped.
+///
+/// Cancellation matters more than it looks: a session's expiry warning is most of an hour out, and
+/// an application that opens and closes sessions would otherwise accumulate a thread per session,
+/// each parked until a deadline nobody is waiting for any more.
 struct ThreadSleep {
     milliseconds: u64,
-    state: Option<Arc<Mutex<SleepState>>>,
+    state: Option<Arc<Timer>>,
+}
+
+#[derive(Default)]
+struct Timer {
+    state: Mutex<SleepState>,
+    /// Signalled by `Drop`, so the thread stops waiting rather than sleeping out its full delay.
+    cancelled: Condvar,
 }
 
 #[derive(Default)]
 struct SleepState {
     elapsed: bool,
+    cancelled: bool,
     waker: Option<Waker>,
+}
+
+impl Timer {
+    fn lock(&self) -> std::sync::MutexGuard<'_, SleepState> {
+        self.state.lock().unwrap_or_else(|error| error.into_inner())
+    }
 }
 
 impl Future for ThreadSleep {
@@ -128,31 +149,47 @@ impl Future for ThreadSleep {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
         let this = self.get_mut();
 
-        let state = this.state.get_or_insert_with(|| {
-            let state = Arc::new(Mutex::new(SleepState::default()));
-            let timer = Arc::clone(&state);
+        let timer = this.state.get_or_insert_with(|| {
+            let timer = Arc::new(Timer::default());
+            let owned = Arc::clone(&timer);
             let milliseconds = this.milliseconds;
             std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(milliseconds));
-                let waker = {
-                    let mut timer = timer.lock().unwrap_or_else(|error| error.into_inner());
-                    timer.elapsed = true;
-                    timer.waker.take()
-                };
+                let guard = owned.lock();
+                let (mut guard, _) = owned
+                    .cancelled
+                    .wait_timeout_while(guard, Duration::from_millis(milliseconds), |state| {
+                        !state.cancelled
+                    })
+                    .unwrap_or_else(|error| error.into_inner());
+
+                if guard.cancelled {
+                    return;
+                }
+                guard.elapsed = true;
+                let waker = guard.waker.take();
+                drop(guard);
                 if let Some(waker) = waker {
                     waker.wake();
                 }
             });
-            state
+            timer
         });
 
-        let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = timer.lock();
         if state.elapsed {
             Poll::Ready(())
         } else {
             state.waker = Some(cx.waker().clone());
             Poll::Pending
         }
+    }
+}
+
+impl Drop for ThreadSleep {
+    fn drop(&mut self) {
+        let Some(timer) = &self.state else { return };
+        timer.lock().cancelled = true;
+        timer.cancelled.notify_all();
     }
 }
 
@@ -238,6 +275,37 @@ mod tests {
         assert_eq!(
             format_rfc3339(1_767_323_045_006),
             "2026-01-02T03:04:05.006Z"
+        );
+    }
+
+    #[test]
+    fn a_dropped_delay_lets_its_thread_go() {
+        let mut delay = ThreadSleep {
+            milliseconds: 60_000,
+            state: None,
+        };
+
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(waker);
+        assert!(Pin::new(&mut delay).poll(&mut context).is_pending());
+
+        let timer = delay.state.clone().expect("polling starts the thread");
+        assert!(
+            Arc::strong_count(&timer) > 1,
+            "the thread holds a reference"
+        );
+
+        drop(delay);
+
+        // The thread has to notice, not wait out the minute it was given.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Arc::strong_count(&timer) > 1 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            Arc::strong_count(&timer),
+            1,
+            "the timer thread outlived the delay nobody is waiting on"
         );
     }
 

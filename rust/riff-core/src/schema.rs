@@ -34,6 +34,10 @@ pub fn validate(schema: &Json, input: &Json) -> ValidationResult {
 /// Anything outside this list is not checked, so [`crate::bundle`] refuses a bundle that uses one:
 /// a constraint that is declared and silently unenforced is worse than one that is absent, because
 /// a reader of `core/agent` would believe it holds everywhere.
+///
+/// `additionalProperties` is on the list only in its boolean form. The schema form — unknown
+/// properties must match *this* — is not implemented, and [`crate::bundle`] refuses it rather than
+/// accepting a rule it would ignore.
 pub const SUPPORTED_KEYWORDS: &[&str] = &[
     "$comment",
     "additionalProperties",
@@ -199,6 +203,7 @@ fn check_object(
         }
     }
 
+    // Only the boolean form reaches here; the schema form is refused at bundle load.
     let additional_allowed = schema.get("additionalProperties") != Some(&Json::Bool(false));
     for (key, raw) in object.iter() {
         match properties.get(key) {
