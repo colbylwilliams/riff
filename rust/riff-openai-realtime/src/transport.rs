@@ -69,6 +69,12 @@ pub struct TransportRequest {
 
 /// Opens transports on demand, so a reconnect does not reuse a finished socket.
 pub trait TransportFactory: Send + Sync {
+    /// What this factory opens.
+    ///
+    /// Declared up front because it decides the audio format the provider advertises, and an
+    /// embedder configures capture and playback from that before anything connects.
+    fn kind(&self) -> TransportKind;
+
     /// Opens one.
     fn open(
         &self,

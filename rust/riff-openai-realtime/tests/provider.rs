@@ -281,6 +281,10 @@ struct FakeFactory {
 }
 
 impl TransportFactory for FakeFactory {
+    fn kind(&self) -> TransportKind {
+        self.transport.kind()
+    }
+
     fn open(
         &self,
         request: TransportRequest,
@@ -583,4 +587,29 @@ fn bounds_the_whole_handshake_rather_than_the_gap_between_messages() {
         64,
         "an elapsed deadline wins before another message is read"
     );
+}
+
+#[test]
+fn advertises_the_audio_format_the_chosen_transport_actually_carries() {
+    // An embedder configures capture and playback from this before anything connects, so reporting
+    // PCM for a WebRTC session would have them set up the wrong hardware path entirely.
+    for (kind, encoding, rate) in [
+        (TransportKind::WebSocket, "pcm_s16le", 24_000),
+        (TransportKind::WebRtc, "opus", 48_000),
+    ] {
+        let factory = Arc::new(FakeFactory {
+            transport: FakeTransport::new(kind),
+            request: Mutex::new(None),
+        });
+        let provider = OpenAIRealtimeProvider::new(OpenAIRealtimeOptions::new(
+            Arc::new(ApiKeyCredentials::new("sk-test")),
+            factory,
+        ));
+
+        let capabilities = provider.capabilities();
+        assert_eq!(capabilities.input_audio.encoding, encoding, "{kind:?}");
+        assert_eq!(capabilities.input_audio.sample_rate, rate, "{kind:?}");
+        assert_eq!(capabilities.output_audio.encoding, encoding, "{kind:?}");
+        assert_eq!(capabilities.output_audio.sample_rate, rate, "{kind:?}");
+    }
 }

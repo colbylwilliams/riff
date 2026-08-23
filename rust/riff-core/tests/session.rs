@@ -1106,3 +1106,49 @@ fn will_not_let_the_agent_corroborate_its_own_term_by_asserting_it_twice() {
         "an uncorroborated alias must never rewrite what they said"
     );
 }
+
+#[test]
+fn a_fault_that_will_not_recover_ends_the_session_rather_than_hanging_the_pump() {
+    let mut harness = Harness::start();
+
+    harness
+        .provider
+        .connection()
+        .emit(riff_core::ProviderEvent::Failed {
+            fault: riff_core::ProviderFault::fatal("invalid_request_error", "unknown parameter"),
+        });
+    harness.step();
+
+    assert_eq!(harness.session.state(), SessionState::Failed);
+    assert!(
+        harness.calls().contains(&Call::Close),
+        "a connection that will not recover has to be closed, not left attached"
+    );
+    // Otherwise `run` would sit on a stream with nothing left to say.
+    assert!(!block_on(harness.session.step()), "the pump has to stop");
+}
+
+#[test]
+fn restarting_after_a_terminal_fault_gets_a_fresh_connection() {
+    let mut harness = Harness::start();
+    let first = harness.provider.connection();
+
+    harness
+        .provider
+        .connection()
+        .emit(riff_core::ProviderEvent::Failed {
+            fault: riff_core::ProviderFault::fatal("invalid_request_error", "unknown parameter"),
+        });
+    harness.step();
+    assert_eq!(harness.session.state(), SessionState::Failed);
+
+    block_on(harness.session.start()).expect("a failed session may be restarted");
+    assert_eq!(harness.session.state(), SessionState::Listening);
+
+    let second = harness.provider.connection();
+    assert!(
+        !Arc::ptr_eq(&first, &second),
+        "a restart has to negotiate a new connection, not resume the dead one"
+    );
+    assert!(first.calls().contains(&Call::Close));
+}

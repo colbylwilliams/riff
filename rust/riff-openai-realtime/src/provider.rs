@@ -91,10 +91,20 @@ impl RealtimeProvider for OpenAIRealtimeProvider {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        let pcm = AudioFormat {
-            encoding: "pcm_s16le".to_owned(),
-            sample_rate: 24_000,
-            channels: 1,
+        // WebRTC negotiates a media track rather than carrying samples in JSON events, so the
+        // format an embedder should capture and play differs by transport. Reporting PCM either way
+        // would have them configure the wrong hardware settings.
+        let format = match self.options.transport.kind() {
+            TransportKind::WebRtc => AudioFormat {
+                encoding: "opus".to_owned(),
+                sample_rate: 48_000,
+                channels: 1,
+            },
+            TransportKind::WebSocket => AudioFormat {
+                encoding: "pcm_s16le".to_owned(),
+                sample_rate: 24_000,
+                channels: 1,
+            },
         };
         ProviderCapabilities {
             speech_to_speech: true,
@@ -103,8 +113,8 @@ impl RealtimeProvider for OpenAIRealtimeProvider {
             vocabulary_biasing: "prompt".to_owned(),
             input_transcription: true,
             function_calling: true,
-            input_audio: pcm.clone(),
-            output_audio: pcm,
+            input_audio: format.clone(),
+            output_audio: format,
             max_session_seconds: Some(3600),
         }
     }

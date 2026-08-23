@@ -40,7 +40,8 @@ session.run().await;
 - **No third-party dependencies, in either crate.** `riff-core` has none and `riff-openai-realtime` depends only on `riff-core`, so [`Cargo.lock`](Cargo.lock) names two packages and nothing else. JSON, text normalization, base64, RFC 3339 formatting, and the deadline primitive are written against the standard library. A dependency here is a dependency the embedder did not choose; adding one needs a stated reason in the PR.
 - **`unsafe` is forbidden**, by a workspace lint rather than by convention.
 - **Everything public is documented**, by `missing_docs`.
-- **Rust 1.88 or newer**, for let-chains. CI checks the floor on that exact toolchain and everything else on current stable, so `rust-version` stays a fact rather than a guess. There is no `rust-toolchain.toml`: an embedder should be able to build these crates with the toolchain they already have.
+- **Rust 1.88 or newer**, for let-chains. That is the floor embedders have to clear, and CI checks it on that exact toolchain so `rust-version` stays a fact rather than a guess.
+- **Contributors build on the toolchain in [`rust-toolchain.toml`](rust-toolchain.toml)**, so clippy and rustfmt behave the same for everyone and a newly released stable cannot turn an unrelated PR red. It says nothing about what embedders need: rustup reads it only inside this directory, and it is ignored when the crates are consumed as a dependency.
 - **`cargo fmt` and `cargo clippy -D warnings` gate CI.** Unlike the TypeScript and Swift halves of this repo, Rust has one canonical formatter and linter, so the binding is held to them.
 
 ## Where the bindings deliberately differ

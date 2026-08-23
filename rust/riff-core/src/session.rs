@@ -261,6 +261,13 @@ impl RiffSession {
             ProviderFault::retryable("connect_failed", error.to_string())
         };
 
+        // Connecting always starts from nothing attached. Every path that ends a session takes the
+        // connection with it, so this is insurance rather than a case that arises today — but
+        // replacing one here would leave a socket open that nobody can reach.
+        if let Some(previous) = self.connection.take() {
+            previous.close(Some("reconnecting".to_owned())).await;
+        }
+
         for term in self.store.load_lexicon().await.map_err(failed)? {
             self.runtime.lexicon.add(term);
         }
@@ -538,6 +545,16 @@ impl RiffSession {
                 let retryable = fault.retryable;
                 self.emit(RiffEvent::Failed(fault));
                 if !retryable {
+                    // Terminal. Leaving the connection attached would keep `run` waiting on a
+                    // stream with nothing left to say, and a restart from `failed` would replace a
+                    // live connection without ever closing the one it displaced.
+                    if let Some(connection) = self.connection.take() {
+                        connection
+                            .close(Some("unrecoverable provider error".to_owned()))
+                            .await;
+                    }
+                    self.pending_warnings.clear();
+                    self.warning_timer = None;
                     self.set_state(SessionState::Failed);
                 }
             }
