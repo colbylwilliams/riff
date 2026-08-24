@@ -1,0 +1,16 @@
+[package]
+name = "riff-openai-realtime"
+description = "Riff on the OpenAI Realtime API: session configuration, event mapping, and ephemeral client secrets."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Depends only on the engine. The socket and the HTTP client are supplied by the embedder, so this
+# crate stays free of a transport it would otherwise choose on their behalf.
+[dependencies]
+riff-core = { path = "../riff-core", version = "1.0.0" }
+
+[lints]
+workspace = true

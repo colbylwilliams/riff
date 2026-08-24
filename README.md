@@ -125,7 +125,7 @@ Your app owns the microphone and interface. Riff listens, clarifies, grounds, an
 
 The portable core holds the **utterance ledger**, **grounding check**, multiple drafts called **takes**, and the finished **prompt artifact**. **Motifs** preserve reusable instructions in the speaker's own words; the **lexicon** supplies domain vocabulary and transcription corrections. Each platform implements this layer natively against the same conformance suite.
 
-The shared agent definition lives in [`core/agent`](core/agent) and compiles to one bundle every binding loads. The artifact schema is [`prompt-artifact.schema.json`](core/schema/prompt-artifact.schema.json).
+The shared agent definition lives in [`core/agent`](core/agent) and compiles to one bundle every binding loads, so behavior changes happen once in Markdown and JSON rather than in TypeScript, Swift, and Rust separately. The artifact schema is [`prompt-artifact.schema.json`](core/schema/prompt-artifact.schema.json).
 
 See [docs/architecture.md](docs/architecture.md) for the full design.
 
@@ -147,6 +147,9 @@ swift/
   Sources/RiffCore/            the same engine, natively
   Sources/RiffOpenAIRealtime/  the same provider, over URLSessionWebSocketTask
   Sources/RiffAudio/           capture and playback, including the echo cancellation setup
+rust/
+  riff-core/               the same engine again, with no dependencies at all
+  riff-openai-realtime/    the same provider, over a socket the embedder supplies
 tools/
   build-bundle.mjs   compiles core/agent into the bundle each binding ships
 examples/
@@ -241,20 +244,47 @@ for await event in session.events {
 Hold a strong reference to the session for as long as it is connected. Releasing it tears the
 connection down, by design — a half-live session with an open microphone is worse than a closed one.
 
+### Rust
+
+```bash
+cargo test --manifest-path rust/Cargo.toml
+```
+
+```rust
+let bundle = Arc::new(AgentBundle::bundled()?);
+let mut options = RiffSessionOptions::new(bundle, provider);
+options.host = Arc::new(my_host);
+
+let mut session = RiffSession::new(options);
+session.on(Box::new(|event| match event {
+    RiffEvent::AgentAudio(pcm) => speaker.play(pcm),
+    RiffEvent::Draft { gist, ready, fidelity, .. } => ui.show(gist, *ready, *fidelity),
+    RiffEvent::Submitted(artifact) => ui.confirm(artifact),
+    _ => {}
+}));
+
+session.start().await?;
+session.run().await;
+```
+
+Neither crate has a third-party dependency, and neither brings an async runtime. The socket, the
+microphone, and the executor are all yours — see [rust/README.md](rust/README.md).
+
 ## Testing
 
 ```bash
-npm test                      # 97 tests: engine, provider, host, conformance
-swift test --package-path swift   # the same conformance suite, natively
+npm test                             # 126 tests: engine, provider, host, conformance
+swift test --package-path swift      # the same conformance suite, natively
+cargo test --manifest-path rust/Cargo.toml   # and again, natively
 ```
 
-The conformance cases in [`core/conformance`](core/conformance) are data, not code, and both
+The conformance cases in [`core/conformance`](core/conformance) are data, not code, and all three
 implementations execute them. They pin the behavior that has to be identical everywhere: which lines
 are grounded and which are rejected, and the exact bytes a finished prompt renders to. A prompt
 captured on a phone and one captured at a desk are held to the same standard and come out the same.
 
 `npm test` also fails if the committed agent bundle has drifted from `core/agent`, so the definition
-Swift ships can never fall behind the one TypeScript ships.
+Swift and Rust ship can never fall behind the one TypeScript ships.
 
 See [docs/conformance.md](docs/conformance.md) for how to add a binding.
 

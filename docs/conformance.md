@@ -51,12 +51,13 @@ by the test runners, so they are written to explain why the case exists rather t
 ## Running
 
 ```bash
-npm test                          # TypeScript, including the suite
-swift test --package-path swift   # Swift, the same cases
+npm test                                     # TypeScript, including the suite
+swift test --package-path swift              # Swift, the same cases
+cargo test --manifest-path rust/Cargo.toml   # Rust, the same cases
 ```
 
-The cases are mirrored into the Swift test target by `tools/build-bundle.mjs`, the same way the agent
-bundle is, and `npm test` fails if either copy has drifted.
+The cases are mirrored into each binding's test target by `tools/build-bundle.mjs`, the same way the
+agent bundle is, and `npm test` fails if any copy has drifted.
 
 ## Adding a case
 
@@ -64,8 +65,8 @@ Add behavior to the suite when it is behavior a speaker could notice. Grounding 
 output, and section ordering belong here. Internal structure does not.
 
 1. Add the case to the appropriate file in `core/conformance/cases`.
-2. `npm run bundle` to mirror it into the Swift target.
-3. Run both suites. A case that passes in one implementation and fails in the other has found a real
+2. `npm run bundle` to mirror it into every binding's test target.
+3. Run every suite. A case that passes in one implementation and fails in another has found a real
    divergence, and the fix belongs in the implementation, not in the case.
 
 Writing the case first is worth it. A grounding change is easy to describe as data and easy to get
@@ -82,8 +83,8 @@ agent is in that file. Extend `tools/build-bundle.mjs` to copy it where your bui
 drift is impossible.
 
 **Implement the engine.** Text normalization, lexicon, grounding, ledger, drafts and takes, tool
-registry with schema validation, renderer, session state machine. The TypeScript and Swift versions
-are deliberately parallel; use whichever is closer to your language.
+registry with schema validation, renderer, session state machine. The TypeScript, Swift, and Rust
+versions are deliberately parallel; use whichever is closest to your language.
 
 **Validate on load.** Reject a bundle with an out-of-range threshold, an undefined render profile, or
 `autoSubmit` set to true. This is the last line of defense against a binding running a modified
@@ -102,7 +103,8 @@ agent.
 - Submission is refused when the policy's required sections are missing, with a message telling the
   agent what to ask for.
 
-The Swift `SessionTests` cover each of these and are a reasonable template.
+The Swift `SessionTests` and the Rust `tests/session.rs` cover each of these and are reasonable
+templates.
 
 ## Divergences found this way
 
@@ -116,9 +118,9 @@ alignment a second time without canonicalization and comparing.
 **Tool-call batching relied on event ordering.** The original design counted outstanding calls and
 requested a continuation when the count reached zero. That works when events are emitted
 synchronously in a loop and breaks when they arrive through an async sequence, where each call
-completes before the next is read — producing one spoken reply per tool. Both implementations now
-carry a turn's calls in a single `tool.calls` event, and the in-flight flag is set when the batch
-arrives and cleared when the continuation starts, so nothing depends on delivery timing.
+completes before the next is read — producing one spoken reply per tool. Every binding now carries a
+turn's calls in a single `tool.calls` event, and the in-flight flag is set when the batch arrives and
+cleared when the continuation starts, so nothing depends on delivery timing.
 
 A later review found four more divergences of the same kind, each present in one implementation
 only: a submitted take stayed active in TypeScript so the next sentence spoken landed inside a
@@ -130,3 +132,7 @@ of them locale-dependent.
 
 None of these would have been found by testing one implementation, and each is now pinned by a case
 or a regression test.
+
+The Rust engine passed every case on its first run, which is the outcome the suite is for: by then
+the divergences above had already been turned into data, so a third implementation could be checked
+against them rather than discovering them again.
