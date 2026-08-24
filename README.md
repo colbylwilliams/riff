@@ -65,12 +65,12 @@ Riff removed filler without paraphrasing, kept the diagnostic "just spins," reso
 
 ## How "their words" is enforced
 
-Riff does not trust a model to preserve someone's voice; it enforces it. Every candidate body line is checked against an append-only ledger of completed transcripts and typed input. Lines that introduce or reorder words are rejected before they reach the draft. Every artifact carries a fidelity score, and swapping models does not weaken the guarantee.
+Riff does not trust a model to preserve someone's voice; it enforces it. Every candidate body line is scored against an append-and-revise ledger of completed transcripts and typed input. Lines that fall below the configured grounding threshold are rejected before they reach the draft. Every artifact carries a fidelity score, and swapping models does not weaken the guarantee.
 
 <details>
 <summary><strong>How the grounding check works</strong></summary>
 
-After known transcription corrections are normalized, a legitimate line is an ordered subsequence of something the speaker actually said: filler, false starts, and whole sentences may be deleted, but the remaining words cannot be rewritten or shuffled. An order-sensitive longest-common-subsequence comparison measures that directly. When a line fails, the model is told which words it invented so it can use the speaker's words or ask.
+After known transcription corrections are normalized, an order-sensitive longest-common-subsequence comparison scores how many of a candidate line's meaningful words appear in the same order in the ledger. Filler and a configured set of connective words do not count toward the score; the remaining words must meet the configured threshold (0.82 by default). When a line falls short, the model is shown its unmatched words so it can use the speaker's words or ask.
 
 See [docs/grounding.md](docs/grounding.md) for the algorithm and its edge cases.
 
