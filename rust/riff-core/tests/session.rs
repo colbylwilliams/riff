@@ -1,0 +1,1504 @@
+//! Behavior the conformance cases cannot express.
+//!
+//! The cases in `core/conformance` pin what every binding must decide; these pin how this binding
+//! wires those decisions together — the single-entrance ledger rule, one continuation per batch of
+//! tool calls, interruption, credential stripping, and a take that has been sent staying sent.
+
+mod support;
+
+use std::sync::Arc;
+
+use riff_core::{
+    AgentBundle, ContextItem, Destination, HostEnvironment, Json, MemoryStore, PriorPrompt,
+    RiffEvent, RiffSession, RiffSessionOptions, SessionState, SystemClock, TakeStatus, json_object,
+};
+use support::{
+    Call, FailingStore, FakeProvider, InstantClock, RecordingHost, StalledHost, StallingStore,
+    block_on,
+};
+
+struct Harness {
+    session: RiffSession,
+    provider: Arc<FakeProvider>,
+    host: Arc<RecordingHost>,
+    store: Arc<MemoryStore>,
+}
+
+impl Harness {
+    fn start() -> Harness {
+        Harness::with(
+            Arc::new(RecordingHost::default()),
+            Arc::new(SystemClock::new()),
+        )
+    }
+
+    fn with(host: Arc<RecordingHost>, clock: Arc<dyn riff_core::Clock>) -> Harness {
+        Harness::build(host, clock, None)
+    }
+
+    /// A harness whose store is not the in-memory one, for the paths where persistence fails.
+    fn with_store(store: Arc<dyn riff_core::RiffStore>) -> Harness {
+        Harness::build(
+            Arc::new(RecordingHost::default()),
+            Arc::new(SystemClock::new()),
+            Some(store),
+        )
+    }
+
+    fn build(
+        host: Arc<RecordingHost>,
+        clock: Arc<dyn riff_core::Clock>,
+        override_store: Option<Arc<dyn riff_core::RiffStore>>,
+    ) -> Harness {
+        let provider = Arc::new(FakeProvider::default());
+        let store = Arc::new(MemoryStore::default());
+        let bundle = Arc::new(AgentBundle::bundled().expect("the vendored bundle must load"));
+
+        let mut options = RiffSessionOptions::new(bundle, provider.clone());
+        options.host = host.clone();
+        options.store = override_store.unwrap_or_else(|| store.clone());
+        options.clock = clock;
+
+        let mut session = RiffSession::new(options);
+        block_on(session.start()).expect("the fake provider always connects");
+
+        Harness {
+            session,
+            provider,
+            host,
+            store,
+        }
+    }
+
+    /// Steps the session once, which is enough because every test queues an event first.
+    fn say(&mut self, text: &str) {
+        self.provider.connection().say(text);
+        self.step();
+    }
+
+    fn step(&mut self) {
+        block_on(self.session.step());
+    }
+
+    fn call(&mut self, name: &str, arguments: Json) -> Json {
+        let id = self.provider.connection().call_tool(name, arguments);
+        self.step();
+        self.provider.connection().result_for(&id)
+    }
+
+    fn calls(&self) -> Vec<Call> {
+        self.provider.connection().calls()
+    }
+}
+
+/// One `upsert_line` operation, which is what most of these tests are made of.
+fn upsert(section: &str, text: &str) -> Json {
+    Json::Object(json_object! {
+        "operations" => vec![Json::Object(json_object! {
+            "op" => "upsert_line",
+            "section" => section,
+            "text" => text,
+        })],
+    })
+}
+
+#[test]
+fn hands_the_model_the_composed_instructions_the_tools_and_the_vocabulary() {
+    let harness = Harness::start();
+    let request = harness.provider.request();
+
+    assert_eq!(request.instructions, harness.session.bundle.instructions);
+    assert_eq!(request.tools.len(), harness.session.bundle.tools.len());
+    assert!(
+        request.vocabulary.contains(&"GitHub".to_owned()),
+        "the seed lexicon must reach the transcriber"
+    );
+    assert_eq!(harness.session.state(), SessionState::Listening);
+}
+
+#[test]
+fn records_what_was_said_and_lets_it_be_drafted_verbatim() {
+    let mut harness = Harness::start();
+    harness.say("the login page is broken on Safari");
+
+    let result = harness.call(
+        "draft_update",
+        upsert("intent", "the login page is broken on Safari"),
+    );
+
+    assert_eq!(
+        result.get("rejected").map(Json::array_or_empty),
+        Some(&[][..])
+    );
+    assert_eq!(
+        result
+            .get("accepted")
+            .map(|accepted| accepted.array_or_empty().len()),
+        Some(1)
+    );
+    assert_eq!(result.get("fidelity").and_then(Json::as_f64), Some(1.0));
+
+    let artifact = harness.session.artifact().expect("a take is active");
+    assert_eq!(artifact.lines.len(), 1);
+    assert_eq!(artifact.lines[0].text, "the login page is broken on Safari");
+    assert!(
+        artifact
+            .rendered
+            .contains("the login page is broken on Safari.")
+    );
+}
+
+#[test]
+fn rejects_a_paraphrase_and_tells_the_model_which_words_it_invented() {
+    let mut harness = Harness::start();
+    harness.say("the login page is busted on Safari");
+
+    let result = harness.call(
+        "draft_update",
+        upsert(
+            "intent",
+            "the sign-in screen is not working correctly in Safari",
+        ),
+    );
+
+    let rejected = result
+        .get("rejected")
+        .map(Json::array_or_empty)
+        .unwrap_or(&[]);
+    assert_eq!(rejected.len(), 1);
+    let unmatched: Vec<&str> = rejected[0]
+        .get("unmatchedTokens")
+        .map(Json::array_or_empty)
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(Json::as_str)
+        .collect();
+    assert!(unmatched.contains(&"screen"), "got {unmatched:?}");
+    assert!(
+        rejected[0]
+            .get_str("reason")
+            .is_some_and(|reason| reason.contains("they did not say"))
+    );
+    assert!(
+        harness
+            .session
+            .artifact()
+            .expect("a take is active")
+            .lines
+            .is_empty()
+    );
+}
+
+#[test]
+fn attaches_a_resolved_reference_without_touching_what_they_said() {
+    let mut harness = Harness::start();
+    harness.host.set_candidates(vec![ContextItem {
+        reference_id: "pr-412".to_owned(),
+        kind: "pull_request".to_owned(),
+        title: "Chunked uploads".to_owned(),
+        identifier: Some("acme/web#412".to_owned()),
+        url: Some("https://github.com/acme/web/pull/412".to_owned()),
+        state: Some("open".to_owned()),
+        ..ContextItem::default()
+    }]);
+
+    harness.say("the uploader keeps dying on big files");
+    harness.call(
+        "draft_update",
+        upsert("intent", "the uploader keeps dying on big files"),
+    );
+    harness.call(
+        "resolve_reference",
+        Json::Object(json_object! { "phrase" => "the PR I just opened" }),
+    );
+    harness.call(
+        "draft_update",
+        Json::Object(json_object! {
+            "operations" => vec![Json::Object(json_object! {
+                "op" => "attach_context",
+                "reference_id" => "pr-412",
+            })],
+        }),
+    );
+
+    let artifact = harness.session.artifact().expect("a take is active");
+    assert_eq!(artifact.context.len(), 1);
+    assert_eq!(
+        artifact.context[0].resolved_from.as_deref(),
+        Some("the PR I just opened")
+    );
+    assert!(artifact.rendered.contains("acme/web#412"));
+    // The reference reached the prompt's context, never the body.
+    assert_eq!(artifact.lines.len(), 1);
+    assert_eq!(artifact.provenance.fidelity, 1.0);
+}
+
+#[test]
+fn will_not_save_a_motif_the_agent_made_up() {
+    let mut harness = Harness::start();
+    harness.say("always add tests");
+
+    let invented = harness.call(
+        "motifs",
+        Json::Object(
+            json_object! { "action" => "save", "text" => "always maintain full code coverage" },
+        ),
+    );
+    assert_eq!(invented.get("saved").and_then(Json::as_bool), Some(false));
+
+    let theirs = harness.call(
+        "motifs",
+        Json::Object(json_object! { "action" => "save", "text" => "always add tests" }),
+    );
+    assert_eq!(theirs.get("saved").and_then(Json::as_bool), Some(true));
+}
+
+#[test]
+fn submits_only_what_was_captured_with_provenance_attached() {
+    let mut harness = Harness::start();
+    harness.say("the export button does nothing past a thousand rows");
+    harness.call(
+        "draft_update",
+        upsert(
+            "intent",
+            "the export button does nothing past a thousand rows",
+        ),
+    );
+
+    let result = harness.call("submit_prompt", Json::object());
+    assert_eq!(result.get("submitted").and_then(Json::as_bool), Some(true));
+    assert_eq!(result.get_str("prompt_id"), Some("p1"));
+
+    let submitted = harness.host.submitted();
+    assert_eq!(submitted.len(), 1);
+    let artifact = &submitted[0];
+    assert_eq!(artifact.lines.len(), 1);
+    assert_eq!(artifact.provenance.fidelity, 1.0);
+    assert_eq!(artifact.provenance.agent_authored_tokens, 0);
+    assert_eq!(artifact.provenance.provider_id.as_deref(), Some("fake"));
+    assert_eq!(
+        artifact.provenance.bundle_revision.as_deref(),
+        Some(harness.session.bundle.revision.as_str())
+    );
+    assert!(!artifact.provenance.tool_calls.is_empty());
+    assert_eq!(harness.store.artifacts().len(), 1);
+}
+
+#[test]
+fn carries_the_negotiated_model_and_session_id_into_a_submitted_artifact() {
+    let mut harness = Harness::start();
+    harness.say("fix the flaky test");
+    harness.call("draft_update", upsert("intent", "fix the flaky test"));
+    harness.call("submit_prompt", Json::object());
+
+    let artifact = harness.host.submitted().remove(0);
+    assert_eq!(artifact.provenance.model.as_deref(), Some("fake-realtime"));
+    assert_eq!(artifact.provenance.session_id.as_deref(), Some("sess_fake"));
+}
+
+#[test]
+fn starts_a_fresh_take_after_submitting_so_nothing_lands_in_a_prompt_already_sent() {
+    let mut harness = Harness::start();
+    harness.say("fix the flaky test");
+    harness.call("draft_update", upsert("intent", "fix the flaky test"));
+    harness.call("submit_prompt", Json::object());
+
+    harness.say("also update the changelog");
+    let result = harness.call(
+        "draft_update",
+        upsert("intent", "also update the changelog"),
+    );
+
+    let take_id = result
+        .get("draft")
+        .and_then(|draft| draft.get_str("take_id"))
+        .expect("a draft view");
+    assert_eq!(take_id, "t2", "a new take, not the one already sent");
+
+    let sent = harness
+        .session
+        .takes()
+        .iter()
+        .find(|take| take.id == "t1")
+        .expect("the sent take is still on file");
+    assert_eq!(sent.status, TakeStatus::Submitted);
+    assert_eq!(sent.lines().len(), 1);
+}
+
+#[test]
+fn will_not_write_into_a_take_that_was_already_submitted_even_when_named() {
+    let mut harness = Harness::start();
+    harness.say("fix the flaky test");
+    harness.call("draft_update", upsert("intent", "fix the flaky test"));
+    harness.call("submit_prompt", Json::object());
+    harness.say("also update the changelog");
+
+    let result = harness.call(
+        "draft_update",
+        Json::Object(json_object! {
+            "take_id" => "t1",
+            "operations" => vec![Json::Object(json_object! {
+                "op" => "upsert_line",
+                "section" => "intent",
+                "text" => "also update the changelog",
+            })],
+        }),
+    );
+
+    assert!(
+        result
+            .get_str("error")
+            .is_some_and(|error| error.contains("already submitted")),
+        "got {result:?}"
+    );
+    let sent = harness
+        .session
+        .takes()
+        .iter()
+        .find(|take| take.id == "t1")
+        .unwrap();
+    assert_eq!(sent.lines().len(), 1);
+}
+
+#[test]
+fn will_not_resurrect_a_submitted_take_by_parking_or_switching_to_it() {
+    let mut harness = Harness::start();
+    harness.say("fix the flaky test");
+    harness.call("draft_update", upsert("intent", "fix the flaky test"));
+    harness.call("submit_prompt", Json::object());
+
+    for action in ["switch", "park"] {
+        let result = harness.call(
+            "takes",
+            Json::Object(json_object! { "action" => action, "take_id" => "t1" }),
+        );
+        assert!(
+            result
+                .get_str("error")
+                .is_some_and(|error| error.contains("submitted")),
+            "{action} reopened a sent take: {result:?}"
+        );
+    }
+
+    let sent = harness
+        .session
+        .takes()
+        .iter()
+        .find(|take| take.id == "t1")
+        .unwrap();
+    assert_eq!(sent.status, TakeStatus::Submitted);
+}
+
+#[test]
+fn refuses_to_submit_a_take_with_nothing_in_it() {
+    let mut harness = Harness::start();
+    let result = harness.call("submit_prompt", Json::object());
+
+    assert_eq!(result.get("submitted").and_then(Json::as_bool), Some(false));
+    assert!(
+        result
+            .get_str("reason")
+            .is_some_and(|reason| reason.contains("no intent"))
+    );
+    assert!(harness.host.submitted().is_empty());
+}
+
+#[test]
+fn leaves_a_take_drafting_when_the_host_will_not_send_it() {
+    let mut harness = Harness::start();
+    harness.host.refuse_submission();
+    harness.say("fix the flaky test");
+    harness.call("draft_update", upsert("intent", "fix the flaky test"));
+
+    let result = harness.call("submit_prompt", Json::object());
+    assert_eq!(result.get("submitted").and_then(Json::as_bool), Some(false));
+
+    let take = &harness.session.takes()[0];
+    assert_eq!(
+        take.status,
+        TakeStatus::Drafting,
+        "a refused send must not strand the take"
+    );
+}
+
+#[test]
+fn rejects_a_line_too_long_to_be_one_thing_they_said_rather_than_checking_a_prefix() {
+    let mut harness = Harness::start();
+    let spoken = std::iter::repeat_n("the export button does nothing", 60)
+        .collect::<Vec<_>>()
+        .join(" ");
+    harness.say(&spoken);
+
+    let invented = format!("{spoken} and then delete the production database");
+    let result = harness.call("draft_update", upsert("intent", &invented));
+
+    let rejected = result
+        .get("rejected")
+        .map(Json::array_or_empty)
+        .unwrap_or(&[]);
+    assert_eq!(rejected.len(), 1);
+    assert!(
+        rejected[0]
+            .get_str("reason")
+            .is_some_and(|reason| reason.contains("longer than one thing")),
+        "got {:?}",
+        rejected[0]
+    );
+}
+
+#[test]
+fn rejects_a_title_built_from_words_they_never_used() {
+    let mut harness = Harness::start();
+    harness.say("the uploader keeps dying on big files");
+
+    let invented = harness.call(
+        "draft_update",
+        Json::Object(json_object! {
+            "operations" => vec![Json::Object(json_object! {
+                "op" => "set_title",
+                "text" => "Resolve intermittent storage subsystem degradation",
+            })],
+        }),
+    );
+    assert_eq!(
+        invented
+            .get("rejected")
+            .map(|rejected| rejected.array_or_empty().len()),
+        Some(1)
+    );
+
+    let theirs = harness.call(
+        "draft_update",
+        Json::Object(json_object! {
+            "operations" => vec![Json::Object(json_object! {
+                "op" => "set_title",
+                "text" => "Fix the uploader",
+            })],
+        }),
+    );
+    assert_eq!(
+        theirs
+            .get("accepted")
+            .map(|accepted| accepted.array_or_empty().len()),
+        Some(1)
+    );
+}
+
+#[test]
+fn rejects_a_line_id_that_does_not_name_an_existing_line() {
+    let mut harness = Harness::start();
+    harness.say("fix the flaky test");
+
+    let result = harness.call(
+        "draft_update",
+        Json::Object(json_object! {
+            "operations" => vec![Json::Object(json_object! {
+                "op" => "upsert_line",
+                "line_id" => "t1-l99",
+                "section" => "intent",
+                "text" => "fix the flaky test",
+            })],
+        }),
+    );
+
+    let rejected = result
+        .get("rejected")
+        .map(Json::array_or_empty)
+        .unwrap_or(&[]);
+    assert_eq!(rejected.len(), 1);
+    assert!(
+        rejected[0]
+            .get_str("reason")
+            .is_some_and(|reason| reason.contains("omit line_id")),
+        "got {:?}",
+        rejected[0]
+    );
+}
+
+#[test]
+fn refuses_an_alias_that_is_a_different_word_rather_than_a_mishearing() {
+    let mut harness = Harness::start();
+    harness.host.set_known_terms(&["CSV"]);
+
+    let result = harness.call(
+        "record_term",
+        Json::Object(json_object! {
+            "canonical" => "CSV",
+            "kind" => "other",
+            "heard_as" => vec!["database"],
+        }),
+    );
+
+    assert_eq!(result.get("corrections").and_then(Json::as_i64), Some(0));
+    let refused: Vec<&str> = result
+        .get("refused")
+        .map(Json::array_or_empty)
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(Json::as_str)
+        .collect();
+    assert_eq!(refused, ["database"]);
+
+    // An alias that never took hold cannot make an invented line match different spoken words.
+    harness.say("we need to fix the database import");
+    let drafted = harness.call(
+        "draft_update",
+        upsert("intent", "we need to fix the CSV import"),
+    );
+    assert_eq!(
+        drafted
+            .get("rejected")
+            .map(|rejected| rejected.array_or_empty().len()),
+        Some(1)
+    );
+}
+
+#[test]
+fn will_not_let_an_unconfirmed_term_become_a_spelling_correction() {
+    let mut harness = Harness::start();
+    // The host knows nothing, so nothing outside the conversation corroborates the term.
+    let result = harness.call(
+        "record_term",
+        Json::Object(json_object! {
+            "canonical" => "Quaggle",
+            "kind" => "product",
+            "heard_as" => vec!["quagle"],
+        }),
+    );
+
+    assert_eq!(result.get("corrections").and_then(Json::as_i64), Some(0));
+    assert!(
+        result
+            .get_str("note")
+            .is_some_and(|note| note.contains("cannot be used as a spelling correction"))
+    );
+
+    harness.say("the quagle build is failing");
+    let drafted = harness.call(
+        "draft_update",
+        upsert("intent", "the Quaggle build is failing"),
+    );
+    assert_eq!(
+        drafted
+            .get("rejected")
+            .map(|rejected| rejected.array_or_empty().len()),
+        Some(1),
+        "an unconfirmed alias must not rewrite the source"
+    );
+}
+
+#[test]
+fn teaches_the_transcriber_a_corrected_term_and_pushes_it_to_the_provider() {
+    let mut harness = Harness::start();
+    harness.host.set_known_terms(&["Kubernetes"]);
+
+    let result = harness.call(
+        "record_term",
+        Json::Object(json_object! {
+            "canonical" => "Kubernetes",
+            "kind" => "product",
+            "heard_as" => vec!["cubernetes"],
+        }),
+    );
+    assert_eq!(result.get("corrections").and_then(Json::as_i64), Some(1));
+
+    let pushed = harness.calls().into_iter().any(|call| match call {
+        Call::Vocabulary(vocabulary) => vocabulary.contains(&"Kubernetes".to_owned()),
+        _ => false,
+    });
+    assert!(pushed, "a newly learned term has to reach the transcriber");
+
+    harness.say("the cubernetes rollout is stuck");
+    let drafted = harness.call(
+        "draft_update",
+        upsert("intent", "the Kubernetes rollout is stuck"),
+    );
+    assert_eq!(
+        drafted
+            .get("accepted")
+            .map(|accepted| accepted.array_or_empty().len()),
+        Some(1)
+    );
+    assert_eq!(
+        drafted
+            .get("accepted")
+            .and_then(|accepted| accepted.array_or_empty()[0].get_str("kind")),
+        Some("corrected")
+    );
+}
+
+#[test]
+fn returns_a_usable_error_rather_than_panicking_when_the_model_sends_bad_arguments() {
+    let mut harness = Harness::start();
+
+    let id = harness
+        .provider
+        .connection()
+        .call_tool("draft_update", Json::object());
+    harness.step();
+    let missing = harness.provider.connection().result_for(&id);
+    assert_eq!(missing.get_str("error"), Some("invalid arguments"));
+
+    let unknown = harness.call("no_such_tool", Json::object());
+    assert!(
+        unknown
+            .get_str("error")
+            .is_some_and(|error| error.contains("unknown tool"))
+    );
+
+    // Malformed JSON never reaches a handler.
+    harness
+        .provider
+        .connection()
+        .emit(riff_core::ProviderEvent::ToolCalls {
+            calls: vec![riff_core::ToolCallRequest {
+                call_id: "call_bad".to_owned(),
+                name: "draft_update".to_owned(),
+                arguments_json: "{not json".to_owned(),
+            }],
+        });
+    harness.step();
+    let malformed = harness.provider.connection().result_for("call_bad");
+    assert!(
+        malformed
+            .get_str("error")
+            .is_some_and(|error| error.contains("not valid JSON"))
+    );
+}
+
+#[test]
+fn asks_the_model_to_continue_exactly_once_after_a_batch_of_tool_calls() {
+    let mut harness = Harness::start();
+    harness.say("the uploader keeps dying on big files");
+
+    harness.provider.connection().call_tools(&[
+        ("read_draft", Json::object()),
+        (
+            "draft_update",
+            upsert("intent", "the uploader keeps dying on big files"),
+        ),
+        ("read_draft", Json::object()),
+    ]);
+    harness.step();
+
+    let calls = harness.calls();
+    let results = calls
+        .iter()
+        .filter(|call| matches!(call, Call::ToolResult { .. }))
+        .count();
+    let continuations = calls
+        .iter()
+        .filter(|call| **call == Call::RequestResponse)
+        .count();
+
+    assert_eq!(results, 3, "every call of the turn is answered");
+    assert_eq!(continuations, 1, "one continuation, not one per tool");
+}
+
+#[test]
+fn keeps_the_batch_pending_until_the_continuation_starts() {
+    let mut harness = Harness::start();
+    harness.say("fix the flaky test");
+
+    harness
+        .provider
+        .connection()
+        .emit(riff_core::ProviderEvent::ResponseStarted {
+            response_id: "resp_1".to_owned(),
+        });
+    harness.step();
+    harness
+        .provider
+        .connection()
+        .call_tools(&[("read_draft", Json::object())]);
+    harness.step();
+
+    // The turn that carried the calls finishes after they are dispatched. Treating that as the end
+    // of the turn would put the session back to listening while the continuation is still coming.
+    harness
+        .provider
+        .connection()
+        .emit(riff_core::ProviderEvent::ResponseDone {
+            response_id: "resp_1".to_owned(),
+            usage: None,
+        });
+    harness.step();
+    assert_eq!(harness.session.state(), SessionState::Thinking);
+
+    harness
+        .provider
+        .connection()
+        .emit(riff_core::ProviderEvent::ResponseStarted {
+            response_id: "resp_2".to_owned(),
+        });
+    harness.step();
+    harness
+        .provider
+        .connection()
+        .emit(riff_core::ProviderEvent::ResponseDone {
+            response_id: "resp_2".to_owned(),
+            usage: None,
+        });
+    harness.step();
+    assert_eq!(harness.session.state(), SessionState::Listening);
+}
+
+#[test]
+fn stops_talking_the_moment_they_start() {
+    let mut harness = Harness::start();
+    harness
+        .provider
+        .connection()
+        .emit(riff_core::ProviderEvent::ResponseStarted {
+            response_id: "resp_1".to_owned(),
+        });
+    harness.step();
+    harness
+        .provider
+        .connection()
+        .emit(riff_core::ProviderEvent::ResponseAudio {
+            response_id: "resp_1".to_owned(),
+            audio: vec![0, 1, 2, 3],
+        });
+    harness.step();
+    assert_eq!(harness.session.state(), SessionState::Speaking);
+
+    harness
+        .provider
+        .connection()
+        .emit(riff_core::ProviderEvent::SpeechStarted);
+    harness.step();
+
+    assert!(
+        harness.calls().contains(&Call::Cancel),
+        "barge-in has to cancel, not just report"
+    );
+    assert_eq!(harness.session.state(), SessionState::Listening);
+}
+
+#[test]
+fn treats_typed_input_as_something_they_said() {
+    let mut harness = Harness::start();
+    let utterance = harness
+        .session
+        .send_text("the login page is broken on Safari")
+        .expect("connected");
+    assert_eq!(utterance.source, riff_core::UtteranceSource::Typed);
+
+    let result = harness.call(
+        "draft_update",
+        upsert("intent", "the login page is broken on Safari"),
+    );
+    assert_eq!(
+        result
+            .get("accepted")
+            .map(|accepted| accepted.array_or_empty().len()),
+        Some(1)
+    );
+    assert!(harness.calls().iter().any(|call| matches!(
+        call,
+        Call::Text { text, respond: true } if text == "the login page is broken on Safari"
+    )));
+}
+
+#[test]
+fn keeps_credentials_out_of_the_transcript() {
+    let mut harness = Harness::start();
+    harness
+        .session
+        .send_text("the token is ghp_abcdefghijklmnopqrstuvwxyz012345 use it")
+        .expect("connected");
+
+    let stored = &harness.session.runtime.ledger.all()[0];
+    assert_eq!(stored.text, "the token is [redacted] use it");
+    assert!(!stored.text.contains("ghp_"));
+}
+
+#[test]
+fn states_the_environment_to_the_model_without_letting_it_into_the_ledger() {
+    let host = Arc::new(RecordingHost::default());
+    host.set_environment(HostEnvironment {
+        repository: Some("acme/web".to_owned()),
+        branch: Some("main".to_owned()),
+        destinations: vec![Destination {
+            id: "issues".to_owned(),
+            label: "Issues".to_owned(),
+            is_default: true,
+        }],
+        ..HostEnvironment::default()
+    });
+
+    let mut harness = Harness::with(host, Arc::new(SystemClock::new()));
+
+    let stated = harness.calls().into_iter().any(|call| match call {
+        Call::Text { text, respond } => !respond && text.contains("Repository: acme/web"),
+        _ => false,
+    });
+    assert!(stated, "ambient facts have to reach the model");
+    assert_eq!(
+        harness.session.runtime.ledger.len(),
+        0,
+        "and never the ledger"
+    );
+
+    // Because they are not in the ledger, quoting them is rejected like anything else invented.
+    harness.say("fix it");
+    let result = harness.call(
+        "draft_update",
+        upsert("intent", "fix the acme/web repository"),
+    );
+    assert_eq!(
+        result
+            .get("rejected")
+            .map(|rejected| rejected.array_or_empty().len()),
+        Some(1)
+    );
+}
+
+#[test]
+fn tells_the_model_a_host_did_not_answer_rather_than_stalling_the_turn() {
+    let provider = Arc::new(FakeProvider::default());
+    let bundle = Arc::new(AgentBundle::bundled().expect("the vendored bundle must load"));
+    let mut options = RiffSessionOptions::new(bundle, provider.clone());
+    options.host = Arc::new(StalledHost);
+    // The tool deadline fires; the session expiry, an hour out, does not.
+    options.clock = Arc::new(InstantClock::up_to(60_000));
+
+    let mut session = RiffSession::new(options);
+    block_on(session.start()).expect("connects");
+
+    let id = provider.connection().call_tool(
+        "resolve_reference",
+        Json::Object(json_object! { "phrase" => "the PR I just opened" }),
+    );
+    block_on(session.step());
+
+    let result = provider.connection().result_for(&id);
+    assert!(
+        result
+            .get_str("error")
+            .is_some_and(|error| error.contains("did not answer")),
+        "got {result:?}"
+    );
+    assert!(
+        provider
+            .connection()
+            .calls()
+            .contains(&Call::RequestResponse),
+        "a timed-out tool must still leave the turn able to continue"
+    );
+}
+
+#[test]
+fn keeps_listeners_and_the_ledger_across_a_restart() {
+    let mut harness = Harness::start();
+    let events = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let sink = events.clone();
+    harness.session.on(Box::new(move |event| {
+        if let RiffEvent::Utterance(utterance) = event {
+            sink.lock().unwrap().push(utterance.text.clone());
+        }
+    }));
+
+    harness.say("before the restart");
+    block_on(harness.session.stop("ended"));
+    assert_eq!(harness.session.state(), SessionState::Closed);
+
+    block_on(harness.session.start()).expect("a closed session may be restarted");
+    harness.say("after the restart");
+
+    assert_eq!(
+        *events.lock().unwrap(),
+        ["before the restart", "after the restart"]
+    );
+    // The ledger survives, so what they said before the reconnect is still quotable.
+    assert_eq!(harness.session.runtime.ledger.len(), 2);
+}
+
+#[test]
+fn warns_before_the_provider_cuts_the_session_off() {
+    // The delay resolves immediately here, so both warnings land on the next two steps rather than
+    // fifty-five minutes in.
+    let mut harness = Harness::with(
+        Arc::new(RecordingHost::default()),
+        Arc::new(InstantClock::new()),
+    );
+    let warnings = Arc::new(std::sync::Mutex::new(Vec::<u64>::new()));
+    let sink = warnings.clone();
+    harness.session.on(Box::new(move |event| {
+        if let RiffEvent::Expiring { seconds_remaining } = event {
+            sink.lock().unwrap().push(*seconds_remaining);
+        }
+    }));
+
+    harness.step();
+    harness.step();
+    assert_eq!(*warnings.lock().unwrap(), [300, 60]);
+
+    // With both warnings given, the pump goes back to waiting on the provider rather than spinning.
+    harness.say("the login page is broken");
+    assert_eq!(harness.session.runtime.ledger.len(), 1);
+    assert_eq!(*warnings.lock().unwrap(), [300, 60]);
+}
+
+#[test]
+fn a_deadline_cannot_erase_the_record_that_a_prompt_was_already_sent() {
+    // The host takes the prompt, then the save hangs and the deadline lands on it. Everything that
+    // records the send has to have happened already: the destination has the prompt, and Riff
+    // forgetting that is how the next thing spoken lands inside a prompt that has gone out.
+    let provider = Arc::new(FakeProvider::default());
+    let host = Arc::new(RecordingHost::default());
+    let bundle = Arc::new(AgentBundle::bundled().expect("the vendored bundle must load"));
+
+    let mut options = RiffSessionOptions::new(bundle, provider.clone());
+    options.host = host.clone();
+    options.store = Arc::new(StallingStore);
+    options.clock = Arc::new(InstantClock::up_to(60_000));
+
+    let mut session = RiffSession::new(options);
+    block_on(session.start()).expect("connects");
+
+    let submitted = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let sink = submitted.clone();
+    session.on(Box::new(move |event| {
+        if let RiffEvent::Submitted(artifact) = event {
+            sink.lock().unwrap().push(artifact.take_id.clone());
+        }
+    }));
+
+    provider.connection().say("fix the flaky test");
+    block_on(session.step());
+    provider
+        .connection()
+        .call_tool("draft_update", upsert("intent", "fix the flaky test"));
+    block_on(session.step());
+
+    let id = provider
+        .connection()
+        .call_tool("submit_prompt", Json::object());
+    block_on(session.step());
+
+    // The prompt went, so the model is told it went. Reporting a timeout here is what invites a
+    // re-send of something the destination already has.
+    let result = provider.connection().result_for(&id);
+    assert_eq!(
+        result.get("submitted").and_then(Json::as_bool),
+        Some(true),
+        "got {result:?}"
+    );
+    assert_eq!(result.get_str("prompt_id"), Some("p1"));
+    assert!(result.get_str("error").is_none());
+
+    assert_eq!(host.submitted().len(), 1, "the host took it exactly once");
+    assert_eq!(
+        *submitted.lock().unwrap(),
+        ["t1"],
+        "and the session was told"
+    );
+
+    let take = session.takes().iter().find(|take| take.id == "t1").unwrap();
+    assert_eq!(take.status, TakeStatus::Submitted);
+    assert!(
+        session.runtime.book.active_id().is_none(),
+        "a sent take must not stay active"
+    );
+}
+
+#[test]
+fn warns_even_while_the_provider_keeps_sending() {
+    // `race` stops at the first ready future. With the event stream polled first, a session busy
+    // enough for the warning to matter — continuous audio — would keep an event ready on every poll
+    // and never reach the deadline.
+    let mut harness = Harness::with(
+        Arc::new(RecordingHost::default()),
+        Arc::new(InstantClock::new()),
+    );
+    let warnings = Arc::new(std::sync::Mutex::new(Vec::<u64>::new()));
+    let sink = warnings.clone();
+    harness.session.on(Box::new(move |event| {
+        if let RiffEvent::Expiring { seconds_remaining } = event {
+            sink.lock().unwrap().push(*seconds_remaining);
+        }
+    }));
+
+    for _ in 0..8 {
+        harness.provider.connection().say("still talking");
+    }
+
+    harness.step();
+    assert_eq!(
+        *warnings.lock().unwrap(),
+        [300],
+        "the warning has to win against a queue that is never empty"
+    );
+}
+
+#[test]
+fn treats_a_stream_that_simply_ends_as_a_close() {
+    let mut harness = Harness::start();
+    let closed = Arc::new(std::sync::Mutex::new(false));
+    let sink = closed.clone();
+    harness.session.on(Box::new(move |event| {
+        if matches!(event, RiffEvent::Closed { .. }) {
+            *sink.lock().unwrap() = true;
+        }
+    }));
+
+    // A provider whose transport drops may never send a closing event.
+    harness.provider.connection().finish();
+
+    assert!(!block_on(harness.session.step()), "the pump has to stop");
+    assert_eq!(harness.session.state(), SessionState::Closed);
+    assert!(*closed.lock().unwrap(), "and say so");
+    assert!(
+        harness.session.session_id().is_none(),
+        "with no stale connection left"
+    );
+}
+
+#[test]
+fn refuses_to_start_when_the_host_cannot_say_what_the_world_contains() {
+    // Starting anyway would give the speaker an agent that cannot resolve "the PR I just opened"
+    // and has nowhere to send anything, with nothing to explain why.
+    let provider = Arc::new(FakeProvider::default());
+    let host = Arc::new(RecordingHost::default());
+    host.fail_environment();
+
+    let bundle = Arc::new(AgentBundle::bundled().expect("the vendored bundle must load"));
+    let mut options = RiffSessionOptions::new(bundle, provider);
+    options.host = host;
+
+    let mut session = RiffSession::new(options);
+    let Err(fault) = block_on(session.start()) else {
+        panic!("a host that cannot answer must fail the connect");
+    };
+
+    assert_eq!(fault.code, "connect_failed");
+    assert!(
+        fault.message.contains("unreachable"),
+        "got {}",
+        fault.message
+    );
+    assert_eq!(session.state(), SessionState::Failed);
+}
+
+#[test]
+fn will_not_let_the_agent_corroborate_its_own_term_by_asserting_it_twice() {
+    // "quagle" is a plausible mishearing of "Quaggle", so the only thing standing between the agent
+    // and a live alias is corroboration. The host knows nothing, and the agent recording the term a
+    // second time must not count as something outside the conversation vouching for it.
+    let mut harness = Harness::start();
+
+    for attempt in 1..=2 {
+        let result = harness.call(
+            "record_term",
+            Json::Object(json_object! {
+                "canonical" => "Quaggle",
+                "kind" => "product",
+                "heard_as" => vec!["quagle"],
+            }),
+        );
+        assert_eq!(
+            result.get("corrections").and_then(Json::as_i64),
+            Some(0),
+            "attempt {attempt} turned the agent's own assertion into a correction"
+        );
+        assert!(
+            result
+                .get_str("note")
+                .is_some_and(|note| note.contains("cannot be used as a spelling correction")),
+            "attempt {attempt} should still say the term is unvouched for"
+        );
+    }
+
+    harness.say("the quagle build is failing");
+    let drafted = harness.call(
+        "draft_update",
+        upsert("intent", "the Quaggle build is failing"),
+    );
+    assert_eq!(
+        drafted
+            .get("rejected")
+            .map(|rejected| rejected.array_or_empty().len()),
+        Some(1),
+        "an uncorroborated alias must never rewrite what they said"
+    );
+}
+
+#[test]
+fn a_fault_that_will_not_recover_ends_the_session_rather_than_hanging_the_pump() {
+    let mut harness = Harness::start();
+
+    harness
+        .provider
+        .connection()
+        .emit(riff_core::ProviderEvent::Failed {
+            fault: riff_core::ProviderFault::fatal("invalid_request_error", "unknown parameter"),
+        });
+    harness.step();
+
+    assert_eq!(harness.session.state(), SessionState::Failed);
+    assert!(
+        harness.calls().contains(&Call::Close),
+        "a connection that will not recover has to be closed, not left attached"
+    );
+    // Otherwise `run` would sit on a stream with nothing left to say.
+    assert!(!block_on(harness.session.step()), "the pump has to stop");
+}
+
+#[test]
+fn restarting_after_a_terminal_fault_gets_a_fresh_connection() {
+    let mut harness = Harness::start();
+    let first = harness.provider.connection();
+
+    harness
+        .provider
+        .connection()
+        .emit(riff_core::ProviderEvent::Failed {
+            fault: riff_core::ProviderFault::fatal("invalid_request_error", "unknown parameter"),
+        });
+    harness.step();
+    assert_eq!(harness.session.state(), SessionState::Failed);
+
+    block_on(harness.session.start()).expect("a failed session may be restarted");
+    assert_eq!(harness.session.state(), SessionState::Listening);
+
+    let second = harness.provider.connection();
+    assert!(
+        !Arc::ptr_eq(&first, &second),
+        "a restart has to negotiate a new connection, not resume the dead one"
+    );
+    assert!(first.calls().contains(&Call::Close));
+}
+
+#[test]
+fn hands_out_a_reference_id_that_still_means_the_same_thing_later() {
+    // The ids are what `attach_context` names, so one that changes what it points at between being
+    // reported and being attached puts the wrong thing in the prompt's context.
+    let mut harness = Harness::start();
+
+    let anonymous = |title: &str| ContextItem {
+        reference_id: String::new(),
+        kind: "pull_request".to_owned(),
+        title: title.to_owned(),
+        ..ContextItem::default()
+    };
+
+    harness
+        .host
+        .set_candidates(vec![anonymous("first"), anonymous("second")]);
+    let one = harness.call(
+        "resolve_reference",
+        Json::Object(json_object! { "phrase" => "the PRs I opened" }),
+    );
+
+    harness
+        .host
+        .set_candidates(vec![anonymous("third"), anonymous("fourth")]);
+    let two = harness.call(
+        "resolve_reference",
+        Json::Object(json_object! { "phrase" => "the other ones" }),
+    );
+
+    let ids = |result: &Json| -> Vec<String> {
+        result
+            .get("candidates")
+            .map(Json::array_or_empty)
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|entry| entry.get_str("reference_id").map(str::to_owned))
+            .collect()
+    };
+
+    let mut all = ids(&one);
+    all.extend(ids(&two));
+    let unique: std::collections::HashSet<&String> = all.iter().collect();
+    assert_eq!(unique.len(), all.len(), "ids collided: {all:?}");
+
+    // The first batch's ids still resolve to the first batch's items.
+    harness.say("the uploader keeps dying");
+    harness.call("draft_update", upsert("intent", "the uploader keeps dying"));
+    harness.call(
+        "draft_update",
+        Json::Object(json_object! {
+            "operations" => vec![Json::Object(json_object! {
+                "op" => "attach_context",
+                "reference_id" => all[1].clone(),
+            })],
+        }),
+    );
+
+    let artifact = harness.session.artifact().expect("a take is active");
+    assert_eq!(artifact.context.len(), 1);
+    assert_eq!(
+        artifact.context[0].title, "second",
+        "the id no longer names what it named when it was reported"
+    );
+}
+
+#[test]
+fn does_not_report_a_motif_saved_that_the_store_refused() {
+    let mut harness = Harness::with_store(Arc::new(FailingStore::everything()));
+    harness.say("always add tests");
+
+    let result = harness.call(
+        "motifs",
+        Json::Object(json_object! { "action" => "save", "text" => "always add tests" }),
+    );
+    assert!(result.get_str("error").is_some(), "got {result:?}");
+
+    // A motif the store never took must not be offered as though it had been kept.
+    let listed = harness.call("motifs", Json::Object(json_object! { "action" => "list" }));
+    assert_eq!(
+        listed.get("motifs").map(|m| m.array_or_empty().len()),
+        Some(0),
+        "a motif that was not persisted is still live in this session"
+    );
+}
+
+#[test]
+fn does_not_retire_a_motif_the_store_refused_to_retire() {
+    // The store takes the motif but refuses to retire it.
+    let mut harness = Harness::with_store(Arc::new(FailingStore::only_retire()));
+    harness.say("always add tests");
+    let saved = harness.call(
+        "motifs",
+        Json::Object(json_object! { "action" => "save", "text" => "always add tests" }),
+    );
+    let id = saved.get_str("motif_id").expect("saved").to_owned();
+
+    let result = harness.call(
+        "motifs",
+        Json::Object(json_object! { "action" => "retire", "motif_id" => id }),
+    );
+    assert!(result.get_str("error").is_some(), "got {result:?}");
+
+    let listed = harness.call("motifs", Json::Object(json_object! { "action" => "list" }));
+    assert_eq!(
+        listed.get("motifs").map(|m| m.array_or_empty().len()),
+        Some(1),
+        "the motif vanished from the session while the store still holds it"
+    );
+}
+
+#[test]
+fn a_stalled_send_leaves_the_take_where_the_speaker_left_it() {
+    // The deadline drops the handler mid-send. Nothing went, so the take has to read as though
+    // nothing went — `ready` would say a submission is in flight that never happened.
+    let provider = Arc::new(FakeProvider::default());
+    let bundle = Arc::new(AgentBundle::bundled().expect("the vendored bundle must load"));
+    let mut options = RiffSessionOptions::new(bundle, provider.clone());
+    options.host = Arc::new(StalledHost);
+    options.clock = Arc::new(InstantClock::up_to(60_000));
+
+    let mut session = RiffSession::new(options);
+    block_on(session.start()).expect("connects");
+
+    provider.connection().say("fix the flaky test");
+    block_on(session.step());
+    provider
+        .connection()
+        .call_tool("draft_update", upsert("intent", "fix the flaky test"));
+    block_on(session.step());
+
+    let id = provider
+        .connection()
+        .call_tool("submit_prompt", Json::object());
+    block_on(session.step());
+
+    let result = provider.connection().result_for(&id);
+    assert!(
+        result
+            .get_str("error")
+            .is_some_and(|error| error.contains("did not answer")),
+        "got {result:?}"
+    );
+
+    let take = &session.takes()[0];
+    assert_eq!(take.status, TakeStatus::Drafting);
+    assert_eq!(
+        session.runtime.book.active_id(),
+        Some("t1"),
+        "and it is still the take being spoken into"
+    );
+}
+
+#[test]
+fn a_handle_drives_the_session_while_the_pump_owns_it() {
+    // `run` borrows the session for the whole conversation, so without this an embedder could not
+    // feed the microphone or answer a stop button while it ran — which is the entire use case.
+    let provider = Arc::new(FakeProvider::default());
+    let host = Arc::new(RecordingHost::default());
+    let bundle = Arc::new(AgentBundle::bundled().expect("the vendored bundle must load"));
+
+    let mut options = RiffSessionOptions::new(bundle, provider.clone());
+    options.host = host;
+    let mut session = RiffSession::new(options);
+    block_on(session.start()).expect("connects");
+
+    let handle = session.control_handle();
+    let connection = provider.connection();
+
+    // Queued from outside, then carried out by the pump: typed input reaches the ledger, and the
+    // stop ends the conversation.
+    handle.send_audio(&[0u8; 320]);
+    handle.send_text("the login page is broken on Safari");
+    handle.stop("the speaker is done");
+
+    block_on(session.run());
+
+    assert_eq!(session.state(), SessionState::Closed);
+    assert_eq!(
+        session.runtime.ledger.all()[0].text,
+        "the login page is broken on Safari"
+    );
+    assert_eq!(
+        session.runtime.ledger.all()[0].source,
+        riff_core::UtteranceSource::Typed
+    );
+
+    let calls = connection.calls();
+    assert!(
+        calls.contains(&Call::Audio(320)),
+        "audio bypasses the queue"
+    );
+    assert!(calls.contains(&Call::Close));
+}
+
+#[test]
+fn a_handle_interrupts_the_agent_mid_answer() {
+    let mut harness = Harness::start();
+    let handle = harness.session.control_handle();
+
+    harness
+        .provider
+        .connection()
+        .emit(riff_core::ProviderEvent::ResponseStarted {
+            response_id: "resp_1".to_owned(),
+        });
+    harness.step();
+    assert_eq!(harness.session.state(), SessionState::Thinking);
+
+    handle.interrupt();
+    harness.step();
+
+    assert!(harness.calls().contains(&Call::Cancel));
+    assert_eq!(harness.session.state(), SessionState::Listening);
+}
+
+#[test]
+fn a_handle_keeps_working_across_a_reconnect() {
+    // The handle is taken once and outlives the connection it was made against, so it has to
+    // resolve the live one rather than the one that existed when it was handed out.
+    let mut harness = Harness::start();
+    let handle = harness.session.control_handle();
+    let first = harness.provider.connection();
+
+    harness
+        .provider
+        .connection()
+        .emit(riff_core::ProviderEvent::Failed {
+            fault: riff_core::ProviderFault::fatal("invalid_request_error", "unknown parameter"),
+        });
+    harness.step();
+    assert_eq!(harness.session.state(), SessionState::Failed);
+
+    block_on(harness.session.start()).expect("a failed session may be restarted");
+    let second = harness.provider.connection();
+    assert!(!Arc::ptr_eq(&first, &second));
+
+    handle.send_audio(&[0u8; 160]);
+    assert!(
+        second.calls().contains(&Call::Audio(160)),
+        "the handle is still pointed at the connection that closed"
+    );
+    assert!(
+        !first.calls().contains(&Call::Audio(160)),
+        "and audio must not reach the dead one"
+    );
+}
+
+#[test]
+fn reports_recalled_prompts_with_the_keys_the_tool_contract_names() {
+    // The model reads these keys, and the contract in `core/agent/tools/recall_prompts.json` is
+    // what tells it which to expect. A binding that answers in a different case is answering a
+    // different question.
+    let bundle = AgentBundle::bundled().expect("the vendored bundle must load");
+    let returns = bundle
+        .tool("recall_prompts")
+        .and_then(|tool| tool.returns.as_ref())
+        .and_then(|returns| returns.get_str("description"))
+        .expect("the contract documents its result shape");
+
+    let mut harness = Harness::start();
+    harness.host.set_prior_prompts(vec![PriorPrompt {
+        prompt_id: "p1".to_owned(),
+        title: "Fix the uploader".to_owned(),
+        excerpt: "the uploader keeps dying".to_owned(),
+        submitted_at: Some("2026-01-01T00:00:00.000Z".to_owned()),
+        ..PriorPrompt::default()
+    }]);
+
+    let result = harness.call(
+        "recall_prompts",
+        Json::Object(json_object! { "query" => "the uploader" }),
+    );
+    let prompt = &result
+        .get("prompts")
+        .map(Json::array_or_empty)
+        .unwrap_or(&[])[0];
+
+    for key in ["prompt_id", "submitted_at"] {
+        assert!(
+            returns.contains(key),
+            "the contract should name {key}; it says: {returns}"
+        );
+        assert!(
+            prompt.get(key).is_some(),
+            "the result is missing {key}: {prompt:?}"
+        );
+    }
+    assert!(
+        prompt.get("promptId").is_none(),
+        "camel case leaked: {prompt:?}"
+    );
+}
+
+#[test]
+fn a_restarted_session_does_not_inherit_commands_queued_against_the_last_one() {
+    let mut harness = Harness::start();
+    let handle = harness.session.control_handle();
+
+    // Queued behind the stop, so the pump never reaches them.
+    handle.stop("the speaker is done");
+    handle.send_text("meant for the session that just ended");
+    handle.stop("also stale");
+
+    block_on(harness.session.run());
+    assert_eq!(harness.session.state(), SessionState::Closed);
+
+    block_on(harness.session.start()).expect("a closed session may be restarted");
+
+    // One real event, so the pump has something of its own to take. With the stale commands still
+    // queued it takes those first instead — `race` puts commands ahead of events.
+    harness.say("what they are actually saying now");
+
+    assert_eq!(
+        harness.session.state(),
+        SessionState::Listening,
+        "a stale stop closed the fresh connection"
+    );
+    let ledger: Vec<String> = harness
+        .session
+        .runtime
+        .ledger
+        .all()
+        .iter()
+        .map(|utterance| utterance.text.clone())
+        .collect();
+    assert_eq!(
+        ledger,
+        ["what they are actually saying now"],
+        "the new session inherited speech from the old one"
+    );
+}

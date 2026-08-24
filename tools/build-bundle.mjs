@@ -5,8 +5,8 @@ import { fileURLToPath } from "node:url";
 
 /**
  * Compiles the language-neutral agent definition in core/agent into a single bundle that every
- * platform binding loads. The compiled bundle is committed so Swift and Kotlin builds do not need
- * a Node toolchain; `--check` fails when the committed copy has drifted from source.
+ * platform binding loads. The compiled bundle is committed so Swift, Rust, and Kotlin builds do not
+ * need a Node toolchain; `--check` fails when the committed copy has drifted from source.
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -15,10 +15,14 @@ const agentDir = join(root, "core", "agent");
 const outputs = [
   join(root, "core", "dist", "riff-agent.bundle.json"),
   join(root, "swift", "Sources", "RiffCore", "Resources", "riff-agent.bundle.json"),
+  join(root, "rust", "riff-core", "resources", "riff-agent.bundle.json"),
 ];
 
 const conformanceSource = join(root, "core", "conformance", "cases");
-const conformanceTarget = join(root, "swift", "Tests", "RiffCoreTests", "Resources");
+const conformanceTargets = [
+  join(root, "swift", "Tests", "RiffCoreTests", "Resources"),
+  join(root, "rust", "riff-core", "tests", "resources"),
+];
 
 const check = process.argv.includes("--check");
 
@@ -129,16 +133,18 @@ for (const out of outputs) {
 const approxTokens = Math.round(instructions.length / 4);
 
 // Bindings that cannot run Node still have to prove they satisfy the conformance suite, so the
-// cases are mirrored into the Swift test target the same way the bundle is.
+// cases are mirrored into each binding's test target the same way the bundle is.
 for (const name of readdirSync(conformanceSource)) {
   if (!name.endsWith(".json")) continue;
   const body = readFileSync(join(conformanceSource, name), "utf8");
-  const target = join(conformanceTarget, name);
-  if (existsSync(target) && readFileSync(target, "utf8") === body) continue;
-  drifted = true;
-  if (!check) {
-    mkdirSync(conformanceTarget, { recursive: true });
-    writeFileSync(target, body);
+  for (const conformanceTarget of conformanceTargets) {
+    const target = join(conformanceTarget, name);
+    if (existsSync(target) && readFileSync(target, "utf8") === body) continue;
+    drifted = true;
+    if (!check) {
+      mkdirSync(conformanceTarget, { recursive: true });
+      writeFileSync(target, body);
+    }
   }
 }
 

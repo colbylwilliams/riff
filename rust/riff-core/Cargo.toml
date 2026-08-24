@@ -1,0 +1,16 @@
+[package]
+name = "riff-core"
+description = "The Riff engine: the utterance ledger, the grounding check, drafts, takes, and the prompt artifact."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# The engine is embedded into other people's applications, so it has no third-party dependencies in
+# any binding: a dependency here is a dependency they did not choose. JSON, text normalization, and
+# the deadline primitive are implemented against the standard library alone.
+[dependencies]
+
+[lints]
+workspace = true

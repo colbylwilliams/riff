@@ -1,0 +1,10 @@
+# Pins what contributors build with, so a lint or a formatting rule fires the same way for
+# everyone and a newly released stable cannot turn an unrelated PR red.
+#
+# This says nothing about what embedders need: rustup reads it only for builds run inside this
+# directory, and it is ignored entirely when the crates are consumed as a dependency. The floor for
+# embedders is `rust-version` in Cargo.toml, which CI checks separately and independently.
+[toolchain]
+channel = "1.98.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"
