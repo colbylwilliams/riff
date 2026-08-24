@@ -536,6 +536,57 @@ describe("RiffSession", () => {
     );
   });
 
+  it("does not orphan a newer take when a submission succeeds after the active take changed", async () => {
+    // The mirror of the failure case: the send goes through, but another take became active while
+    // the host was answering, so clearing the active take would strand it.
+    let deliver: (result: { submitted: boolean; destination: string }) => void;
+    host.submitPrompt = () =>
+      new Promise((resolve) => {
+        deliver = resolve;
+      });
+
+    provider.say("the export button does nothing past a thousand rows");
+    await settle();
+    provider.callTool("draft_update", {
+      operations: [
+        { op: "upsert_line", section: "intent", text: "the export button does nothing past a thousand rows" },
+      ],
+    });
+    await settle();
+    const firstTake = session.book.activeId!;
+
+    const [submitCall, newCall] = provider.callTools([
+      { name: "submit_prompt", args: {} },
+      { name: "takes", args: { action: "new", label: "avatars" } },
+    ]);
+    await settle();
+    const secondTake = provider.resultFor(newCall!).take_id;
+
+    deliver!({ submitted: true, destination: "test" });
+    await settle();
+
+    assert.equal(provider.resultFor(submitCall!).submitted, true);
+    assert.equal(session.book.get(firstTake)?.status, "submitted");
+    // The take they moved on to is still the one being spoken into, so the next line lands in it
+    // rather than starting a third.
+    assert.equal(session.book.activeId, secondTake);
+    assert.equal(session.book.get(secondTake)?.status, "drafting");
+
+    provider.say("also the avatars flicker on every scroll");
+    await settle();
+    const drafted = provider.callTool("draft_update", {
+      operations: [{ op: "upsert_line", section: "intent", text: "the avatars flicker on every scroll" }],
+    });
+    await settle();
+
+    assert.equal(provider.resultFor(drafted).draft.take_id, secondTake, "no third take was started");
+    assert.equal(
+      session.takes().filter((take) => take.status === "drafting").length,
+      1,
+      "exactly one take is ever the one being spoken into",
+    );
+  });
+
   it("gives the model a timeout rather than hanging when a host never answers", async () => {
     host.resolveReference = () => new Promise(() => {});
 

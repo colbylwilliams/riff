@@ -1002,7 +1002,10 @@ impl ToolRuntime {
         };
         self.record(ToolEffect::Submitted(Box::new(stored.clone())));
 
-        if !keep_open {
+        if !keep_open && self.book.active_id() == Some(take_id.as_str()) {
+            // Guarded on it still being the active take: another one can have become active while
+            // the host was answering, and clearing then would orphan a take that is still being
+            // drafted. Whatever made that take active already announced it.
             self.book.clear_active();
             self.record(ToolEffect::TakeChanged(None));
         }

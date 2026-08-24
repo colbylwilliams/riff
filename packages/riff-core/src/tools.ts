@@ -580,9 +580,12 @@ const HANDLERS: Record<string, Handler> = {
       }
 
       runtime.onSubmitted?.(stored);
-      if (!args.keep_open) {
+      if (!args.keep_open && runtime.book.activeId === take.id) {
         // Without this the submitted take stays active and the next line spoken lands inside a
-        // prompt that has already been sent.
+        // prompt that has already been sent. Guarded on it still being the active take: another one
+        // can have become active while the host was answering, and clearing then would orphan a
+        // take that is still being drafted. Whatever made that take active already announced it,
+        // so there is nothing further to report here.
         runtime.book.clearActive();
         runtime.onTakeChanged?.(null);
       }
