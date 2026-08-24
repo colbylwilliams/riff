@@ -167,7 +167,9 @@ final class RecordingHost: RiffHost, @unchecked Sendable {
     private var stored: [ContextItem] = []
     private var received: [PromptArtifact] = []
     private var known: [String] = []
-    private var stalls = false
+    private var holds = false
+    private var stallsLookup = false
+    private var submitGate: CheckedContinuation<Void, Never>?
 
     /// Vocabulary this world knows about, which is what corroborates a spelling correction.
     var knownTerms: [String] {
@@ -185,13 +187,42 @@ final class RecordingHost: RiffHost, @unchecked Sendable {
         return received
     }
 
-    /// Makes `submitPrompt` never answer, so the deadline fires before anything has been delivered.
-    var stallsSubmit: Bool {
-        get { lock.lock(); defer { lock.unlock() }; return stalls }
-        set { lock.lock(); stalls = newValue; lock.unlock() }
+    /// Holds `submitPrompt` until released, so a test can let a call that has already timed out
+    /// finish afterwards — which is what `withDeadline` leaves behind when it abandons work.
+    var holdSubmit: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return holds }
+        set { lock.lock(); holds = newValue; lock.unlock() }
     }
 
-    func resolveReference(_ request: ResolveReferenceRequest) async throws -> [ContextItem] { candidates }
+    /// Makes `resolveReference` never answer, so a second call can still be in flight while an
+    /// abandoned first one finishes underneath it.
+    var stallsResolve: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return stallsLookup }
+        set { lock.lock(); stallsLookup = newValue; lock.unlock() }
+    }
+
+    /// Lets a held `submitPrompt` return. A gate never released simply never returns.
+    func releaseSubmit() {
+        takeGate()?.resume()
+    }
+
+    private func storeGate(_ gate: CheckedContinuation<Void, Never>) {
+        lock.lock(); submitGate = gate; lock.unlock()
+    }
+
+    private func takeGate() -> CheckedContinuation<Void, Never>? {
+        lock.lock(); defer { lock.unlock() }
+        let gate = submitGate
+        submitGate = nil
+        return gate
+    }
+
+    func resolveReference(_ request: ResolveReferenceRequest) async throws -> [ContextItem] {
+        if stallsResolve {
+            await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in }
+        }
+        return candidates
+    }
     func lookupTerm(_ request: LookupTermRequest) async throws -> [TermMatch] {
         knownTerms
             .filter { $0.lowercased() == request.heard.lowercased() }
@@ -200,8 +231,10 @@ final class RecordingHost: RiffHost, @unchecked Sendable {
     func recallPrompts(_ request: RecallPromptsRequest) async throws -> [PriorPrompt] { [] }
 
     func submitPrompt(_ artifact: PromptArtifact, options: SubmitOptions) async throws -> SubmitResult {
-        if stallsSubmit {
-            await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in }
+        if holdSubmit {
+            // A checked continuation is indifferent to cancellation, which is the point: this models
+            // a host that keeps going after Riff has stopped waiting for it.
+            await withCheckedContinuation { (gate: CheckedContinuation<Void, Never>) in storeGate(gate) }
         }
         // NSLock cannot be taken from an async context, so the critical section stays synchronous.
         store(artifact)
@@ -589,7 +622,7 @@ struct SessionTests {
         // committed and giving up is the honest answer.
         let (session, provider, host, _) = try await makeSession()
         defer { withExtendedLifetime(session) {} }
-        host.stallsSubmit = true
+        host.holdSubmit = true
 
         provider.connection.say("the export button does nothing past a thousand rows")
         await settle()
@@ -611,6 +644,55 @@ struct SessionTests {
         #expect(result["error"]?.stringValue?.contains("did not answer") == true)
         #expect(session.book.take(takeId)?.status == .drafting, "an unsent take is left where it was")
         #expect(session.book.activeId == takeId)
+    }
+
+    @Test("does not hand a later call the result of one that timed out first")
+    func abandonedCommitStaysWithItsOwnCall() async throws {
+        // `withDeadline` abandons work rather than stopping it, so a submission that has already
+        // timed out can still be in flight when the next call starts. When it finally lands it
+        // commits a real success — which must reach nobody but its own call.
+        let (session, provider, host, _) = try await makeSession()
+        defer { withExtendedLifetime(session) {} }
+        host.holdSubmit = true
+
+        provider.connection.say("the export button does nothing past a thousand rows")
+        await settle()
+        let drafted = provider.connection.callTool("draft_update", .object([
+            "operations": .array([
+                .object([
+                    "op": .string("upsert_line"),
+                    "section": .string("intent"),
+                    "text": .string("the export button does nothing past a thousand rows"),
+                ]),
+            ]),
+        ]))
+        _ = try await provider.connection.result(for: drafted)
+        let takeId = try #require(session.book.activeId)
+
+        let submitted = provider.connection.callTool("submit_prompt", .object([:]))
+        let timedOut = try await provider.connection.result(for: submitted, timeout: .seconds(12))
+        #expect(timedOut["error"]?.stringValue?.contains("did not answer") == true)
+
+        // A second call is now in flight, and the abandoned submission lands underneath it. That
+        // ordering is the hazard: a result committed by work belonging to the first call must not be
+        // visible to the second, whatever the second call goes on to do.
+        host.stallsResolve = true
+        let resolving = provider.connection.callTool(
+            "resolve_reference",
+            .object(["phrase": .string("the PR I just opened")])
+        )
+        try? await Task.sleep(for: .milliseconds(500))
+        host.releaseSubmit()
+        await settle()
+
+        #expect(host.submitted.count == 1)
+        #expect(session.book.take(takeId)?.status == .submitted, "the prompt really did go out")
+
+        // The second call times out on its own account, and reports that rather than the submission.
+        let result = try await provider.connection.result(for: resolving, timeout: .seconds(12))
+        #expect(result["error"]?.stringValue?.contains("did not answer") == true)
+        #expect(result["submitted"] == nil, "a committed result belongs to the call that made it")
+        #expect(result["prompt_id"] == nil)
     }
 
     @Test("keeps the event stream alive across a restart")

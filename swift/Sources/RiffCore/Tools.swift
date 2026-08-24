@@ -19,6 +19,27 @@ func jsonString(_ value: String?) -> JSONValue? { value.map { .string($0) } }
 func jsonNumber(_ value: Double?) -> JSONValue? { value.map { .number($0) } }
 func jsonInt(_ value: Int?) -> JSONValue? { value.map { .number(Double($0)) } }
 
+/// One tool call's own state, which is where a committed result has to live.
+///
+/// A call is bounded so a host that never answers cannot hold a turn open. Past the point where
+/// something outside Riff has changed — a prompt the destination has taken — there is nothing left
+/// to give up on, and reporting a timeout there would tell the model a prompt that went out did not,
+/// inviting it to send again. A handler commits at that moment; everything after it is bookkeeping
+/// that may be abandoned freely.
+///
+/// Scoped to the call rather than held on the registry because `withDeadline` abandons work instead
+/// of stopping it: a handler that has already timed out can still be running when the next call
+/// starts, and anything it writes must land somewhere only its own call can read. Riff's other
+/// bindings hold this the same way, for the same reason.
+@MainActor
+final class ToolCall {
+    private(set) var committed: JSONValue?
+
+    func commit(_ result: JSONValue) {
+        committed = result
+    }
+}
+
 /// Everything a tool call needs to read and change. Confined to the main actor because the draft is
 /// what a user interface renders, and there is exactly one conversation in flight at a time.
 @MainActor
@@ -71,18 +92,6 @@ public final class ToolRegistry {
     private let runtime: ToolRuntime
     private let definitions: [String: ToolDefinition]
 
-    /// A result that is already true, whatever happens to the rest of the handler.
-    ///
-    /// A call is bounded so a host that never answers cannot hold a turn open. Past the point where
-    /// something outside Riff has changed — a prompt the destination has taken — there is nothing
-    /// left to give up on, and reporting a timeout there would tell the model a prompt that went out
-    /// did not, inviting it to send again. A handler commits at that moment; everything after it is
-    /// bookkeeping that may be abandoned freely.
-    ///
-    /// One field is enough because this binding dispatches a turn's calls one at a time. The
-    /// TypeScript engine holds the same thing per call, because it dispatches a batch together.
-    private var committed: JSONValue?
-
     public init(runtime: ToolRuntime) {
         self.runtime = runtime
         self.definitions = Dictionary(uniqueKeysWithValues: runtime.bundle.tools.map { ($0.name, $0) })
@@ -128,23 +137,24 @@ public final class ToolRegistry {
     /// Bounds a tool call. A timeout is a result the model can act on; silence is not.
     ///
     /// A committed result outranks both the timeout and any later failure: it says the world has
-    /// already changed, which no amount of giving up afterwards can undo.
+    /// already changed, which no amount of giving up afterwards can undo. The box is created here,
+    /// so it belongs to this call and nothing an abandoned earlier call does can reach it.
     private func run(name: String, args: JSONValue, timeoutMs: Int) async throws -> JSONValue {
-        committed = nil
+        let call = ToolCall()
         do {
             return try await withDeadline(
                 milliseconds: timeoutMs,
                 onTimeout: { RiffError.tool("\(name) did not answer within \(timeoutMs)ms; tell them it is not responding") }
             ) { [self] in
-                try await run(name: name, args: args)
+                try await run(name: name, args: args, call: call)
             }
         } catch {
-            guard let committed else { throw error }
+            guard let committed = call.committed else { throw error }
             return committed
         }
     }
 
-    private func run(name: String, args: JSONValue) async throws -> JSONValue {
+    private func run(name: String, args: JSONValue, call: ToolCall) async throws -> JSONValue {
         switch name {
         case "draft_update": return try draftUpdate(args)
         case "read_draft": return try readDraft(args)
@@ -154,7 +164,7 @@ public final class ToolRegistry {
         case "recall_prompts": return try await recallPrompts(args)
         case "motifs": return try await motifs(args)
         case "takes": return try takes(args)
-        case "submit_prompt": return try await submitPrompt(args)
+        case "submit_prompt": return try await submitPrompt(args, call: call)
         default: throw RiffError.unknownTool(name)
         }
     }
@@ -575,7 +585,7 @@ public final class ToolRegistry {
         }
     }
 
-    private func submitPrompt(_ args: JSONValue) async throws -> JSONValue {
+    private func submitPrompt(_ args: JSONValue, call: ToolCall) async throws -> JSONValue {
         let take = try openTake(from: args)
         let policy = runtime.bundle.policy
 
@@ -640,7 +650,7 @@ public final class ToolRegistry {
 
         runtime.onSubmitted?(stored)
         if stoodDown { runtime.onTakeChanged?(nil) }
-        committed = report()
+        call.commit(report())
 
         // Reporting a failed save as a failed submission would invite a retry that sends it twice,
         // so the send is reported as what it is.

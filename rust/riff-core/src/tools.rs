@@ -147,6 +147,13 @@ impl ToolRuntime {
     /// The deadline exists so a host that never answers cannot stall a turn, but past the point
     /// where the world has changed there is nothing left to give up on. Reporting a timeout there
     /// would tell the speaker their prompt did not go when it did.
+    ///
+    /// Held on the runtime rather than per call, which is safe here and only here: `with_deadline`
+    /// drops the abandoned future, so a handler that ran out of time cannot resume and write into
+    /// the next call's slot, and the `&mut self` borrow keeps anything else out for as long as the
+    /// future lives. The TypeScript and Swift engines scope this to the call instead, because both
+    /// abandon work by leaving it running. Anything here that starts a handler without owning it
+    /// for its whole life has to move this to the call too.
     fn commit(&mut self, result: Json) {
         self.committed = Some(result);
     }

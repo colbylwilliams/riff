@@ -100,7 +100,7 @@ new GitHubHost({
 });
 ```
 
-Every host call is bounded by `session.limits.toolTimeoutMs`, so a host that never answers cannot hold a turn open. That bound stops at the point where your host has actually delivered something: once `submitPrompt` returns `submitted: true`, the engine commits that answer, and a slow or broken artifact store afterwards can neither undo it nor turn it into a timeout the model would act on by sending the prompt a second time. Before that point there is nothing to undo, so a stalled `submitPrompt` is reported as a timeout and the draft is left exactly where the speaker had it.
+Host calls a tool makes are bounded by `session.limits.toolTimeoutMs`, so a host that never answers cannot hold a turn open. That bound stops at the point where your host has actually delivered something: once `submitPrompt` returns `submitted: true`, the engine commits that answer, and a slow or broken artifact store afterwards can neither undo it nor turn it into a timeout the model would act on by sending the prompt a second time. Before that point there is nothing to undo, so a stalled `submitPrompt` is reported as a timeout and the draft is left exactly where the speaker had it.
 
 The corollary is for you: a `submitPrompt` that is abandoned mid-flight may still land, which is why the method should be idempotent where the destination allows it.
 
@@ -116,6 +116,9 @@ stated to the model as context.
 
 That context goes to the model but **not** into the ledger. Environment facts are not things the
 speaker said, so the grounding check will reject any attempt to quote them as though they were.
+
+> [!IMPORTANT]
+> Unlike the methods a tool calls, this one is **not** bounded by `session.limits.toolTimeoutMs`. It runs inside `start()`, before there is a conversation to protect — as do the store's `loadLexicon` and `listMotifs` — so a host that blocks here blocks the session from starting at all. Answer from what you already know, and leave anything slow to `resolveReference` or `lookupTerm`, where the deadline applies.
 
 ## Writing one
 
