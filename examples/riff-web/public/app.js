@@ -94,13 +94,18 @@ let githubAvailable = false;
  */
 let shown = null;
 /**
- * Which take the prompt pane is showing.
+ * Which take the prompt pane is showing, and whether the viewer chose it.
  *
- * A session holds several unsent prompts, so "the draft" is a choice. It follows whichever one Riff
- * is writing into, until someone opens a parked one to read — which changes what is on screen and
- * nothing else. Deciding which take is being written into is Riff's job, from what it hears.
+ * A session holds several unsent prompts, so "the draft" is a choice. By default the pane follows
+ * whichever one Riff is writing into. Opening one to read pins it, so a draft update landing in
+ * another prompt does not yank the pane away mid-read — but an explicit change of take, which is the
+ * speaker saying which prompt they are on, takes the pane with it and releases the pin.
+ *
+ * Deciding which take is being written into is Riff's job, from what it hears. This is only about
+ * what is on screen.
  */
 let viewingTakeId = null;
+let pinnedTakeId = null;
 /** Set once someone picks a mode, so a later key change does not move the selection under them. */
 let modeChosen = false;
 /** The id the host gave the last thing it resolved, so the script can attach what was found. */
@@ -306,15 +311,17 @@ function handleEvent(event) {
       break;
 
     case "draft":
-      // The pane follows the take being written into, unless a parked one is open to read.
-      if (viewingTakeId === null || viewingTakeId === event.takeId) showTake(event.takeId);
-      else renderTakes();
+      // A draft update is Riff writing, not the speaker changing prompt, so it never takes the pane
+      // away from one being read.
+      followTake(event.takeId);
       break;
 
     case "take":
-      // A null take means nothing is active and the next thing said starts a fresh one — which
-      // happens right after a send, when the prompt that just went out is still worth looking at.
-      if (event.takeId) showTake(event.takeId);
+      // An explicit change of take is the speaker saying which prompt they are on, so the pane goes
+      // with it. A null take means nothing is active and the next thing said starts a fresh one —
+      // which happens right after a send, when the prompt that just went out is still worth looking
+      // at, so what is on screen stays until there is something newer to follow.
+      if (event.takeId) showTake(event.takeId, { pinned: false });
       else renderTakes();
       break;
 
@@ -339,7 +346,9 @@ function handleEvent(event) {
 
     case "submitted":
       lastArtifact = event.artifact;
-      showTake(event.artifact.takeId);
+      // Unpinned, so the pane shows what was just sent and then moves on by itself as soon as Riff
+      // starts writing the next prompt.
+      showTake(event.artifact.takeId, { pinned: false });
       showSent();
       break;
 
@@ -464,6 +473,10 @@ function addUtterance(utterance) {
  * A real tab set, not the look of one: exactly one tab is tabbable and the arrow keys move between
  * them, because `role="tablist"` is a promise about how the thing behaves and assistive technology
  * has no way to find out it was only decorative.
+ *
+ * Tabs are updated in place rather than rebuilt. Riff drafts continuously while someone talks, so
+ * replacing the children here would destroy the focused tab several times a sentence and drop the
+ * keyboard out of the widget mid-navigation.
  */
 function renderTakes() {
   const takes = shown?.takes() ?? [];
@@ -471,36 +484,57 @@ function renderTakes() {
 
   ui.takes.hidden = takes.length < 2;
   ui.takesHint.hidden = ui.takes.hidden;
-  ui.takes.replaceChildren();
+
   if (ui.takes.hidden) {
+    ui.takes.replaceChildren();
     ui.promptView.removeAttribute("aria-labelledby");
     return;
   }
 
-  for (const take of takes) {
+  const stale = new Map([...ui.takes.children].map((tab) => [tab.dataset.takeId, tab]));
+  // A take can be dropped from the book while its tab has focus, which is the one case reconciling
+  // cannot preserve on its own.
+  const focusedTakeId = ui.takes.contains(document.activeElement)
+    ? document.activeElement.dataset.takeId
+    : null;
+
+  takes.forEach((take, index) => {
     const status = takeStatus(take, activeId);
     const selected = take.id === viewingTakeId;
+    const tab = stale.get(take.id) ?? createTakeTab(take.id);
+    stale.delete(take.id);
 
-    const tab = document.createElement("button");
-    tab.type = "button";
-    tab.className = "take";
-    tab.id = `take-tab-${take.id}`;
     tab.dataset.status = status;
-    tab.dataset.takeId = take.id;
-    tab.setAttribute("role", "tab");
     tab.setAttribute("aria-selected", String(selected));
-    tab.setAttribute("aria-controls", ui.promptView.id);
     // Roving tabindex: Tab reaches the strip once, then the arrow keys move within it.
     tab.tabIndex = selected ? 0 : -1;
     tab.title = TAKE_STATUS_TITLES[status];
+    // The label follows the draft: an unlabelled take is known by its title once it has one.
+    tab.replaceChildren(span(take.label ?? take.title?.text ?? take.id), span(status, "take-status"));
 
-    tab.append(span(take.label ?? take.title?.text ?? take.id), span(status, "take-status"));
-    tab.addEventListener("click", () => showTake(take.id));
-    tab.addEventListener("keydown", (event) => moveBetweenTakes(event));
-    ui.takes.append(tab);
-
+    if (ui.takes.children[index] !== tab) ui.takes.insertBefore(tab, ui.takes.children[index] ?? null);
     if (selected) ui.promptView.setAttribute("aria-labelledby", tab.id);
+  });
+
+  for (const tab of stale.values()) tab.remove();
+
+  if (focusedTakeId && !ui.takes.contains(document.activeElement)) {
+    const selected = ui.takes.querySelector('[aria-selected="true"]');
+    (ui.takes.querySelector(`[data-take-id="${focusedTakeId}"]`) ?? selected)?.focus();
   }
+}
+
+function createTakeTab(takeId) {
+  const tab = document.createElement("button");
+  tab.type = "button";
+  tab.className = "take";
+  tab.id = `take-tab-${takeId}`;
+  tab.dataset.takeId = takeId;
+  tab.setAttribute("role", "tab");
+  tab.setAttribute("aria-controls", ui.promptView.id);
+  tab.addEventListener("click", () => showTake(takeId, { pinned: true }));
+  tab.addEventListener("keydown", moveBetweenTakes);
+  return tab;
 }
 
 /**
@@ -531,7 +565,7 @@ function moveBetweenTakes(event) {
 
   event.preventDefault();
   // Selection follows focus, which is the expected behavior when showing a tab is this cheap.
-  showTake(tabs[next].dataset.takeId);
+  showTake(tabs[next].dataset.takeId, { pinned: true });
   ui.takes.querySelector('[aria-selected="true"]')?.focus();
 }
 
@@ -543,13 +577,27 @@ function takeStatus(take, activeId) {
   return "parked";
 }
 
-/** Puts one take on screen. Which take Riff is writing into is unaffected. */
-function showTake(takeId) {
+/**
+ * Puts one take on screen. Which take Riff is writing into is unaffected.
+ *
+ * `pinned` records that the viewer chose this prompt, so later drafts landing elsewhere leave it
+ * alone. Anything Riff drives passes `pinned: false`, which releases a previous choice.
+ */
+function showTake(takeId, { pinned }) {
   viewingTakeId = takeId;
+  pinnedTakeId = pinned ? takeId : null;
   const artifact = takeId ? (shown?.artifact(takeId) ?? null) : null;
   renderDraft(artifact);
   setFidelity(artifact?.provenance.fidelity ?? 0);
   renderTakes();
+}
+
+/** A draft update: it moves the pane only when the viewer is not reading something else. */
+function followTake(takeId) {
+  if (pinnedTakeId !== null && pinnedTakeId !== takeId) renderTakes();
+  // A draft landing in the prompt being read is not a reason to stop reading it, so a pin on this
+  // take survives rather than being released by the update it was waiting for.
+  else showTake(takeId, { pinned: pinnedTakeId === takeId });
 }
 
 function renderDraft(artifact) {
@@ -889,6 +937,7 @@ function reset() {
   agentEntry = null;
   shown = null;
   viewingTakeId = null;
+  pinnedTakeId = null;
   ui.ledger.replaceChildren();
   ui.activity.replaceChildren();
   ui.utteranceCount.textContent = "0";
