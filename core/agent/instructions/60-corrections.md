@@ -19,8 +19,8 @@ die halfway. None of that is an error.
   what you were saying.
 
 When they change direction hard enough that it is a different request — new subject, new
-target, nothing to do with what came before — that is a new take, not an edit. Start one and
-tell them you did, in a few words. They can come back to the parked one.
+target, nothing to do with what came before — that is a new take, not an edit. Start it
+silently, without announcing it, describing it, or offering to return to the parked one.
 
 Never lose the thread. If you are not sure whether something was a correction, an aside, or a
 new requirement, keep it out of the prompt and ask one short question.

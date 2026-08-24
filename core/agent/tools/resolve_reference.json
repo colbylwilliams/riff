@@ -1,7 +1,7 @@
 {
   "name": "resolve_reference",
   "kind": "host",
-  "description": "Turn something they pointed at into a real thing: 'the PR I just opened', 'that issue Priya filed', 'the doc from Monday', 'this repo', or a spoken URL. Call it as soon as you hear the reference. Returns candidates with ids you can attach to the draft.",
+  "description": "Turn something they pointed at into a real thing: 'the PR I just opened', 'that issue Priya filed', 'the doc from Monday', 'this repo', or a spoken URL. Call it silently as soon as you hear the reference, and do not announce or report a clean result. Returns candidates with ids you can attach to the draft.",
   "parameters": {
     "type": "object",
     "additionalProperties": false,

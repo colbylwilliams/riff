@@ -1,12 +1,7 @@
 import { MemoryStore, RiffSession, SECTIONS, loadBundle } from "@riff/core";
 
 import { DEMO_MOTIFS, DemoHost } from "./demo-host.js";
-import {
-  DEMO_SCRIPT,
-  spokenReference,
-  substituteReferences,
-  substituteSpokenReference,
-} from "./demo-script.js";
+import { DEMO_SCRIPT, substituteReferences } from "./demo-script.js";
 import { ProxyHost } from "./proxy-host.js";
 import { ScriptedProvider } from "./scripted-provider.js";
 import { observeProvider } from "./observe-provider.js";
@@ -110,7 +105,6 @@ let pinnedTakeId = null;
 let modeChosen = false;
 /** The id the host gave the last thing it resolved, so the script can attach what was found. */
 let lastReferenceId = null;
-let lastReferenceSpoken = null;
 
 /**
  * GitHub when the server has a token, the canned world otherwise.
@@ -205,10 +199,9 @@ function buildScripted(id) {
       if (step.user) ui.pending.hidden = phase !== "begin";
       if (step.note && phase === "begin") addEntry({ head: "…", note: step.note, variant: "said" });
     },
-    // The script names a PR by the words used, not by an id, so whatever the host called the thing
-    // it found is filled in here. That is what lets one script run against either world.
+    // The script names a PR by the words used, so the host's id is filled into attach_context.
+    // That is what lets one script run against either world.
     prepareArgs: (_name, args) => substituteReferences(args, lastReferenceId),
-    prepareText: (text) => substituteSpokenReference(text, lastReferenceSpoken),
   });
 
   return {
@@ -380,7 +373,6 @@ function handleToolResult({ name, args, result }) {
   if (name === "resolve_reference") {
     const found = result?.candidates?.[0];
     lastReferenceId = found?.reference_id ?? null;
-    lastReferenceSpoken = found ? spokenReference(found) : null;
     addEntry({
       head: "resolve_reference",
       note: found
@@ -933,7 +925,6 @@ function reset() {
   lastArtifact = null;
   lastSubmission = null;
   lastReferenceId = null;
-  lastReferenceSpoken = null;
   agentEntry = null;
   shown = null;
   viewingTakeId = null;

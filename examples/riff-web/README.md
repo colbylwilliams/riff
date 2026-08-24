@@ -37,7 +37,7 @@ Sending is a **dry run** unless you tick *file a real issue*. The script ends by
 
 **Live mic** opens a real WebRTC session. The microphone is published as a media track rather than pushed through `sendAudio`, so the browser handles echo cancellation and jitter and this example needs no audio code beyond `getUserMedia`. Speak, and the same panes fill in. With both an OpenAI key and a GitHub token on the server there is a real conversation to have against a real repository, so the page opens on this mode instead of scripted — until you pick for yourself, after which it stays where you put it.
 
-The script refers to a PR by the words the speaker used, never by an id, so one recording runs against either host: whatever `resolve_reference` returns is filled in before the call goes out, and Riff names what it actually found. Against the demo host it says *"that's 412, chunked uploads"*; against your repository it says whatever it really resolved.
+The script refers to a PR by the words the speaker used, never by an id, so one recording runs against either host: whatever `resolve_reference` returns is filled into `attach_context` before the call goes out. The lookup stays silent while the activity pane shows what the host resolved.
 
 ## What you are looking at
 

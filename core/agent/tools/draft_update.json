@@ -1,7 +1,7 @@
 {
   "name": "draft_update",
   "kind": "local",
-  "description": "Add, replace, remove, reorder, or retitle lines in the current draft prompt, and attach resolved context to it. Call this continuously as the person talks. Line text must be what they actually said; every line is grounding-checked against the utterance ledger and ungrounded lines are rejected.",
+  "description": "Add, replace, remove, reorder, or retitle lines in the current draft prompt, and attach resolved context to it. Call this continuously as the person talks, without speaking before or after the call and without reading back or summarizing the change. Line text must be what they actually said; every line is grounding-checked against the utterance ledger and ungrounded lines are rejected.",
   "parameters": {
     "type": "object",
     "additionalProperties": false,

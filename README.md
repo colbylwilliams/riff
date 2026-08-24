@@ -1,52 +1,27 @@
 # Riff
 
-Riff is a voice agent that turns thinking out loud into a finished prompt for another agent — in
-the speaker's own words, without them ever having to read it back or edit it.
+Riff is a voice agent that turns thinking out loud into a finished prompt for another agent — in the speaker's own words, ready to send without proofreading or editing.
 
-You talk. Riff listens, asks the occasional question, quietly looks up the things you pointed at
-instead of naming, and assembles a prompt out of sentences you actually said. When you say "send
-it," it goes.
+You talk. Riff listens, asks only the questions that matter, resolves the things you pointed at instead of naming, and assembles a prompt from sentences you actually said. When you say "send it," it goes.
 
 ---
 
 ## The problem
 
-Most of the time now, building software means writing prompts. The agent does the work; the person
-decides what the work is. That makes the prompt the highest-leverage thing a person produces in a
-day, and it is produced under worse conditions than any other artifact they make.
+Prompts are now among the highest-leverage things a developer produces, but typing is slow and today's voice workflow only trades it for another chore: dictate a monologue, repair the load-bearing names speech recognition missed, restructure speech into prose, fetch every PR or document reference, and repeat the instructions that apply every time. The downstream agent cannot clarify any of it until after the prompt is sent.
 
-**Typing is the bottleneck, and voice does not fix it yet.** Speaking is three times faster than
-typing and it is how people already think through a problem. But the current voice workflow is:
-recite a monologue, read the transcript, fix what the recognizer got wrong, restructure it because
-speech is not prose, then submit. The proofreading and editing give back everything the speed
-gained. Worse, the agent on the other side is silent during the part where it could help most — it
-cannot ask "which repo?" until after you have finished and sent.
+The tempting shortcut makes the deeper problem worse. Asking a model to "clean up" the transcript removes hedges, emphasis, and the speaker's specific words. The result reads better but can mean something different — and fails silently because the person stopped reading it.
 
-**Speech recognition breaks on exactly the words that matter.** Ordinary English transcribes fine.
-Product names, repo names, service names, acronyms, and colleagues' names — the load-bearing nouns
-of a technical request — come out as "get hub," "flake guard," "sequel." These are the words the
-downstream agent needs most and the ones the transcript is least likely to get right.
+<details>
+<summary><strong>Why ordinary dictation isn't enough</strong></summary>
 
-**Half the effort goes into context the person should not have to fetch.** A request usually points
-at something: the PR they just opened, the issue someone filed, the doc from Monday. Either the
-person stops mid-thought to go find the number and the URL, or they leave it vague — "the PR I just
-opened" — and the downstream agent burns time and tokens working out what that meant, sometimes
-wrongly.
+- **Editing gives back the speed.** Spoken thoughts include filler, false starts, and ideas that arrive out of order. Turning a monologue into a usable prompt still means proofreading and restructuring it; Riff's [grounding rules](docs/grounding.md#what-counts-as-an-allowed-edit) remove the cleanup without rewriting the speaker.
+- **Recognition misses the load-bearing nouns.** Product names, repositories, services, acronyms, and colleagues' names are exactly what a technical request cannot afford to get wrong. Riff combines a learned lexicon with [term lookup](docs/host-bridge.md#lookupterm) instead of making the speaker repair "get hub," "flake guard," or "sequel."
+- **Fetching context breaks the train of thought.** People naturally say "the PR I just opened" or "the doc from Monday." [Reference resolution](docs/host-bridge.md#resolvereference) finds the concrete item while preserving the phrase they actually used.
+- **Standing instructions should not be retyped.** Rules such as "don't touch the generated files" recur across prompts and are easiest to forget when they matter. Riff saves them as motifs in the speaker's own words and [reattaches them with their provenance intact](docs/prompt-artifact.md#sections).
+- **Prompting is not one-shot.** Ideas branch, pause, and resume. A session can hold [multiple takes](docs/architecture.md#takes), parking one unfinished prompt while the speaker works on another.
 
-**People repeat themselves constantly.** "Don't touch the generated files." "Small PRs." "Run the
-linter before you're done." The same standing instructions get retyped into prompt after prompt, and
-get forgotten in exactly the prompts where they mattered.
-
-**Prompting is iterative, and the tools treat it as one-shot.** Ideas get worked out across several
-drafts. People want to start one prompt, park it, start another, come back. There is nowhere to put
-a half-finished prompt.
-
-And underneath all of it: **the obvious fix makes things worse.** Handing the transcript to a model
-and asking it to "clean this up" produces a well-organized prompt that is no longer the person's.
-Their hedges are gone, their emphasis is gone, their specific weird word for the thing has been
-replaced by a more standard one. Intent lives in that specificity. A prompt that reads better and
-means something slightly different is a worse prompt, and it fails silently — the person never sees
-what was lost, because they stopped reading it.
+</details>
 
 ## What Riff does instead
 
@@ -59,7 +34,7 @@ A short session, start to finish:
 >
 > **You** — and it's related to the PR I just opened I think
 >
-> **Riff** — that's 412, chunked uploads.
+> **Riff** — *(silent; resolves and attaches it)*
 >
 > **You** — yeah that one. um, and don't touch the generated files, you know how it is
 >
@@ -86,46 +61,20 @@ just spins. it's related to the PR I just opened.
   "the PR I just opened"
 ```
 
-Three things to notice.
-
-**Every sentence in the body is one the speaker said.** Filler and false starts are gone. Nothing
-was rephrased. "just spins" survived, because that is a real diagnostic detail and a rewriter would
-have dropped it as informal.
-
-**The reference was resolved but the sentence was not.** The body still says "the PR I just opened,"
-because that is what they said. The context block says which PR that is. The downstream agent gets
-both.
-
-**The constraint arrived in their words**, from a standing instruction Riff had saved earlier, not
-from a policy Riff invented.
+Riff removed filler without paraphrasing, kept the diagnostic "just spins," resolved the vague PR reference in context rather than rewriting the speaker, and reused the standing constraint verbatim.
 
 ## How "their words" is enforced
 
-Instructing a model to preserve someone's voice does not work reliably. Models paraphrase; it is
-close to the core of what they do. So in Riff it is not an instruction, it is a gate.
+Riff does not trust a model to preserve someone's voice; it enforces it. Every candidate body line is scored against an append-and-revise ledger of completed transcripts and typed input. Lines that fall below the configured grounding threshold are rejected before they reach the draft. Every artifact carries a fidelity score, and swapping models does not weaken the guarantee.
 
-Everything the speaker says is recorded in an append-only **utterance ledger**. When the agent wants
-to add a line to the prompt it proposes the text, and the engine checks that line against the
-ledger before it is allowed in. The permitted edit is *deletion*: drop filler, drop a false start,
-drop a whole sentence, fix a word the transcriber got wrong. That means a legitimate line is an
-ordered subsequence of something the speaker actually said, which a longest-common-subsequence
-comparison measures directly — and because it is order-sensitive, it also catches words being
-shuffled inside a sentence, which reads as a rewrite even when every word is theirs.
+<details>
+<summary><strong>How the grounding check works</strong></summary>
 
-Lines that fail are rejected, and the rejection tells the model which words it invented:
-
-```
-they did not say "csv", "functionality", "silently"; use their words or ask them
-```
-
-The model then puts their words back, or asks. The speaker sees none of this.
-
-Two consequences worth calling out. Fidelity becomes a **number** — the token-weighted share of the
-prompt that is provably the speaker's — carried on every artifact, so a consumer can tell whether a
-prompt was captured or composed without reading it. And the property survives model swaps: a
-different, chattier model produces the same guarantee, because the guarantee is not in the prompt.
+After known transcription corrections are normalized, an order-sensitive longest-common-subsequence comparison scores how many of a candidate line's meaningful words appear in the same order in the ledger. Filler and a configured set of connective words do not count toward the score; the remaining words must meet the configured threshold (0.82 by default). When a line falls short, the model is shown its unmatched words so it can use the speaker's words or ask.
 
 See [docs/grounding.md](docs/grounding.md) for the algorithm and its edge cases.
+
+</details>
 
 ## Goals
 
@@ -155,78 +104,32 @@ See [docs/grounding.md](docs/grounding.md) for the algorithm and its edge cases.
 
 ## Architecture
 
-Two seams, and everything interesting sits between them.
+At a glance, Riff sits between the application where someone speaks, the services that provide speech and context, and the agent that ultimately does the work.
 
 ```mermaid
-flowchart TB
-    subgraph app["Embedding application"]
-        mic["Microphone and playback"]
-        ui["Draft, transcript, controls"]
-    end
-
-    subgraph riff["Riff"]
-        session["Session — state, turns, tool dispatch"]
-        ledger["Utterance ledger — what was said"]
-        grounding["Grounding check — may this line go in?"]
-        draft["Takes and drafts"]
-        artifact["Prompt artifact + provenance"]
-    end
-
-    subgraph agent["Shared agent definition"]
-        instr["Instructions"]
-        tools["Tool contracts"]
-        cfg["Session defaults + lexicon"]
-    end
-
-    provider["RealtimeProvider — OpenAI Realtime, or another"]
-    host["RiffHost — references, terms, prior prompts, destinations"]
-    downstream["The agent that does the work"]
-
-    mic --> session
-    session <--> provider
-    session --> ledger --> grounding --> draft --> artifact
-    session <--> host
-    agent --> session
-    artifact --> downstream
-    session --> ui
+flowchart LR
+    app["Your app"] <--> riff["Riff"]
+    riff <--> speech["Speech provider"]
+    riff <--> host["Your context"]
+    riff --> downstream["Agent that does the work"]
 ```
 
-**`RealtimeProvider`** is everything that produces speech-to-speech: move audio, report what was
-heard, relay tool calls. Nothing above it knows any provider's wire format, which is what lets the
-speech engine change without changing a single thing a speaker can observe.
+Your app owns the microphone and interface. Riff listens, clarifies, grounds, and drafts; the finished prompt goes to the downstream agent only when the speaker says to send it.
 
-**`RiffHost`** is everything world-shaped: what "the PR I just opened" refers to, what an acronym
-means here, what they asked for last week, where a finished prompt goes. Riff knows how to keep a
-prompt in someone's voice; it does not know what their world contains. This is why the same agent
-works in an editor, a terminal, a phone, and a design tool.
+<details>
+<summary><strong>Architecture and core concepts</strong></summary>
 
-Between them sits the part that is genuinely Riff: the ledger, the grounding check, drafts, takes,
-and the artifact. That layer is implemented natively per platform and is held to a shared
-conformance suite.
+**`RealtimeProvider`** moves audio, reports what was heard, and relays tool calls without exposing a provider's wire format to the engine.
 
-The **agent definition** — instructions, tool contracts, session defaults, seed lexicon — lives in
-`core/agent` as plain files and compiles to a single bundle that every binding loads. Changing how
-Riff behaves is a change to markdown and JSON, not to TypeScript, Swift, and Rust in parallel.
+**`RiffHost`** resolves world-shaped context — references, terms, prior prompts, and destinations — without putting that context into the speaker's ledger.
 
-More in [docs/architecture.md](docs/architecture.md).
+The portable core holds the **utterance ledger**, **grounding check**, multiple drafts called **takes**, and the finished **prompt artifact**. **Motifs** preserve reusable instructions in the speaker's own words; the **lexicon** supplies domain vocabulary and transcription corrections. Each platform implements this layer natively against the same conformance suite.
 
-## Ideas worth naming
+The shared agent definition lives in [`core/agent`](core/agent) and compiles to one bundle every binding loads, so behavior changes happen once in Markdown and JSON rather than in TypeScript, Swift, and Rust separately. The artifact schema is [`prompt-artifact.schema.json`](core/schema/prompt-artifact.schema.json).
 
-- **Utterance ledger** — append-and-revise record of everything said. The only thing the prompt body
-  may draw from.
-- **Grounding check** — the gate described above. Configurable per section; strict everywhere by
-  default.
-- **Takes** — a session holds several drafts. Change subject and Riff parks the old one instead of
-  destroying it. Come back to it later.
-- **Motifs** — standing instructions saved once, in the speaker's own words, and reattached when
-  they apply. Because they are captured verbatim, reuse cannot flatten anyone's voice.
-- **Lexicon** — domain vocabulary that transcription gets wrong. Feeds transcription biasing at
-  connect time, and lets the grounding check see that "get hub" and "GitHub" are the same word.
-  Grows as the agent learns; corrections apply to both sides of every comparison, so an alias can
-  never make a paraphrase look grounded.
-- **Prompt artifact** — the output, carrying the rendered prompt, the resolved context, the terms
-  used, and provenance including the fidelity score. Schema in
-  [`core/schema/prompt-artifact.schema.json`](core/schema/prompt-artifact.schema.json).
+See [docs/architecture.md](docs/architecture.md) for the full design.
+
+</details>
 
 ## Repository layout
 
