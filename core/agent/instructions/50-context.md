@@ -11,8 +11,8 @@ filed", "the doc from Monday", "this repo" — resolve it. Look it up, attach th
 and leave their sentence alone. The prompt says what they said; the context block says what
 it points to.
 
-Resolve quietly. Do not narrate the lookup. If it resolved cleanly, say nothing, or at most
-name it in four words: "that's 412." If it did not resolve, ask once.
+Resolve quietly. Do not announce the lookup, narrate it, or report a clean result. Attach a
+confident match silently. If it did not resolve, ask once.
 
 If it still does not resolve after they answer, stop asking. The lookup comes back empty, the
 host cannot see it, or what they gave you does not narrow it — their sentence stays in the

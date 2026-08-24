@@ -68,9 +68,7 @@ Each question is asked **once**. Whatever comes back is the answer; when it does
 
 ### 4. Feedback is opt-in
 
-The agent does not critique the draft, score it, warn that it is thin, or offer to tighten it up
-unless asked. The instruction enumerates what counts as asking ("how's that look", "anything
-missing", "read it back") and states that silence and pauses are not asking.
+The agent does not critique the draft, score it, warn that it is thin, or offer to tighten it up. It gives feedback only when explicitly asked ("how's that look", "anything missing", "read it back"), and silence and pauses are not asking.
 
 Unsolicited feedback is how a capture tool turns into an editor, and an editor is what makes people
 stop trusting that the prompt is still theirs.
@@ -87,17 +85,15 @@ When a reference will not resolve even after the speaker answers, their sentence
 
 ## Conversational behavior
 
-**Speaking style.** Most turns produce no speech at all. Capturing what was said is a tool call, not a sentence said back, so the whole of a response to a turn is normally a `draft_update` and nothing else. This is also how silence is actually reachable: turn detection runs with `autoRespond`, so the provider creates a response after every turn whether or not there is anything to say — a response made only of tool calls is what "saying nothing" looks like on the wire.
+**Speaking style.** Most turns produce no speech at all. Capturing what was said is a tool call, not a sentence said back, so the whole response to a turn is normally a `draft_update` and nothing else. This is also how silence is reachable: turn detection runs with `autoRespond`, so the provider creates a response after every turn whether or not there is anything to say — a response made only of tool calls is what "saying nothing" looks like on the wire.
 
-When Riff does speak: short, a sentence, usually less. It does not volunteer acknowledgment phrases, repeat back what was just said, or narrate its tool calls — recording a line is the acknowledgement of it, and the draft is already on screen. Results are mentioned only when they change something the speaker needs to know: "that's 412." A silent pause while someone thinks is correct behavior, not a failure to respond.
+Riff never previews a tool call, narrates its work, reports a clean result, or repeats or summarizes a prompt addition. The draft is already on screen, and speaking the addition is the readback Riff exists to replace. Tool actions happen first and silently; if the speaker explicitly needs confirmation afterward, the entire response is `Added.`, `Done.`, or `Got it.`
 
-Two things are never *volunteered*. The line being recorded — the draft is already on screen, and speaking it is the readback Riff exists to replace. And anything about what comes next: its own capabilities, what it is about to do, what the speaker might want to add, or an assurance that it will keep listening if they keep going. Both are what a model reaches for to fill a turn it was forced to take, and both land hardest right when the speaker is mid-thought.
+Riff never offers an action, advertises a capability, proposes what comes next, asks whether the speaker wants anything else, or invites them to add more. These are filler responses to a model turn, not part of capture, and they land hardest while the speaker is still thinking.
 
-Neither is a gag rule, and the difference is the split the identity section draws: Riff does not volunteer, but it always answers. A direct question gets a direct answer, however often it is asked — "did you get that?" is answered in a word, and the how-to question in [Stay out of the work](#2-stay-out-of-the-work) requires naming the boundary and offering to record it as an open question.
+Only a necessary question or a direct answer produces speech. A direct question gets a brief answer, but being asked never widens Riff's job. A how-to question is recorded directly as an open question for the working agent rather than becoming an offer to record it.
 
-An unprompted license is spent on the thing that triggered it, not for the session. Circling back to the same one is what the rule forbids; a genuinely separate trigger gets its own single mention. Two subject changes are two takes worth naming, and two resolved references are two "that's 412"s. Where a license really is once per session, the section that grants it says so — the readiness note in `90-handoff` fires when the draft *first* becomes sendable and explicitly never again.
-
-The rules that survive being asked are the ones that are not about volunteering at all: brevity, no filler phrases, and never reading a list aloud hold in an answer exactly as they hold in an aside. Being asked shortens what Riff says; it never widens the job.
+Brevity, no filler phrases, and never reading a list aloud hold in a direct answer exactly as they do everywhere else. A silent pause while someone thinks is correct behavior, not a failure to respond.
 
 **Never read the draft aloud unless asked.** Reading it back is the workflow Riff exists to replace.
 When a readback is requested, the default is a one-sentence gist of what is covered, not the prompt
@@ -145,10 +141,7 @@ so related operations are folded into one tool with an `action` rather than spli
 `local` tools run inside Riff and touch the ledger, drafts, and lexicon. `host` tools are delegated
 to the embedding application ([host-bridge.md](host-bridge.md)).
 
-Tool descriptions are written for the model and carry behavioral instruction, not just type
-information: `draft_update` says to call it continuously as the person talks rather than at the end,
-`resolve_reference` says to call it the moment a reference is heard, and `submit_prompt` says not to
-confirm first.
+Tool descriptions are written for the model and carry behavioral instruction, not just type information: `draft_update` says to call it continuously and silently as the person talks rather than at the end, `resolve_reference` says to call it silently the moment a reference is heard, and `submit_prompt` says not to confirm first or describe what was sent.
 
 Arguments are validated against each tool's JSON Schema before a handler runs. Failures return a
 structured error the model can act on rather than throwing, because a malformed call should cost one

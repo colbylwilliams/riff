@@ -101,7 +101,7 @@ sequenceDiagram
     G-->>S: ok, trimmed, 1.0, from u3
     S->>Pr: two function_call_outputs
     S->>Pr: one response.create
-    Pr->>P: "that's 412"
+    Pr-->>S: response.done (no speech)
 ```
 
 Two details in there are load-bearing.

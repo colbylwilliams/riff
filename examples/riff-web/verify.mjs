@@ -13,12 +13,7 @@ import { readFileSync } from "node:fs";
 import { MemoryStore, RiffSession, loadBundle } from "@riff/core";
 
 import { DEMO_MOTIFS, DemoHost } from "./public/demo-host.js";
-import {
-  DEMO_SCRIPT,
-  spokenReference,
-  substituteReferences,
-  substituteSpokenReference,
-} from "./public/demo-script.js";
+import { DEMO_SCRIPT, substituteReferences } from "./public/demo-script.js";
 import { ScriptedProvider } from "./public/scripted-provider.js";
 import { observeProvider } from "./public/observe-provider.js";
 
@@ -30,13 +25,11 @@ const store = new MemoryStore({ motifs: DEMO_MOTIFS });
 const toolResults = [];
 const events = [];
 let lastReferenceId = null;
-let lastReferenceSpoken = null;
 
 const scripted = new ScriptedProvider({
   script: DEMO_SCRIPT,
   speed: 60,
   prepareArgs: (_name, args) => substituteReferences(args, lastReferenceId),
-  prepareText: (text) => substituteSpokenReference(text, lastReferenceSpoken),
 });
 
 const provider = observeProvider(scripted, {
@@ -45,7 +38,6 @@ const provider = observeProvider(scripted, {
     if (entry.name !== "resolve_reference") return;
     const found = entry.result?.candidates?.[0];
     lastReferenceId = found?.reference_id ?? null;
-    lastReferenceSpoken = found ? spokenReference(found) : null;
   },
 });
 
@@ -79,9 +71,11 @@ assert.equal(artifact.context[0].resolvedFrom, "the PR I just opened");
 assert.equal(artifact.lines.filter((line) => line.grounding.kind === "motif").length, 1);
 assert.equal(host.submitted.length, 1, "the host should have received the artifact exactly once");
 
-// The agent names what the host actually found rather than an id written into the script.
-const spoken = events.findLast((event) => event.type === "agent.transcript" && event.final);
-assert.equal(spoken?.text, "that's 412, chunked uploads.");
+assert.equal(
+  events.some((event) => event.type === "agent.transcript" && event.final),
+  false,
+  "clean tool results should remain silent",
+);
 
 assert.equal(artifact.rendered, readmePrompt(), "the rendered prompt drifted from the README");
 

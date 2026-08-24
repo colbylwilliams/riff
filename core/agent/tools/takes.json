@@ -1,7 +1,7 @@
 {
   "name": "takes",
   "kind": "local",
-  "description": "A take is one draft prompt. A session can hold several. Start a new one when they change subject entirely, park the current one when they want to come back to it, and switch when they do.",
+  "description": "A take is one draft prompt. A session can hold several. Start a new one when they change subject entirely, park the current one when they want to come back to it, and switch when they do. Perform the action silently without announcing, describing, or offering it.",
   "parameters": {
     "type": "object",
     "additionalProperties": false,
