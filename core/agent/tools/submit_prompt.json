@@ -1,7 +1,7 @@
 {
   "name": "submit_prompt",
   "kind": "host",
-  "description": "Hand the finished prompt to the agent that will do the work. Only when they say to send it. Do not confirm first and do not read it back.",
+  "description": "Hand the finished prompt to the agent that will do the work. Only when they say to send it. Do not confirm first and do not read it back. After success, stay silent or say only 'Done.' Never describe what was sent or offer another action.",
   "parameters": {
     "type": "object",
     "additionalProperties": false,
