@@ -12,6 +12,17 @@ Prompts are now among the highest-leverage things a developer produces, but typi
 
 The tempting shortcut makes the deeper problem worse. Asking a model to "clean up" the transcript removes hedges, emphasis, and the speaker's specific words. The result reads better but can mean something different — and fails silently because the person stopped reading it.
 
+<details>
+<summary><strong>Why ordinary dictation isn't enough</strong></summary>
+
+- **Editing gives back the speed.** Spoken thoughts include filler, false starts, and ideas that arrive out of order. Turning a monologue into a usable prompt still means proofreading and restructuring it; Riff's [grounding rules](docs/grounding.md#what-counts-as-an-allowed-edit) remove the cleanup without rewriting the speaker.
+- **Recognition misses the load-bearing nouns.** Product names, repositories, services, acronyms, and colleagues' names are exactly what a technical request cannot afford to get wrong. Riff combines a learned lexicon with [term lookup](docs/host-bridge.md#lookupterm) instead of making the speaker repair "get hub," "flake guard," or "sequel."
+- **Fetching context breaks the train of thought.** People naturally say "the PR I just opened" or "the doc from Monday." [Reference resolution](docs/host-bridge.md#resolvereference) finds the concrete item while preserving the phrase they actually used.
+- **Standing instructions should not be retyped.** Rules such as "don't touch the generated files" recur across prompts and are easiest to forget when they matter. Riff saves them as motifs in the speaker's own words and [reattaches them with their provenance intact](docs/prompt-artifact.md#sections).
+- **Prompting is not one-shot.** Ideas branch, pause, and resume. A session can hold [multiple takes](docs/architecture.md#takes), parking one unfinished prompt while the speaker works on another.
+
+</details>
+
 ## What Riff does instead
 
 A short session, start to finish:
