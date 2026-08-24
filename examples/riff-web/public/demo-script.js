@@ -8,7 +8,6 @@
  *
  * Steps:
  *   { user }   what the transcriber heard, appended to the utterance ledger
- *   { agent }  what Riff says back, spoken in live mode and silent here
  *   { tools }  a turn's worth of tool calls, dispatched together the way a provider delivers them
  */
 
@@ -76,8 +75,6 @@ export const DEMO_SCRIPT = [
       },
     ],
   },
-
-  { agent: `that's ${REFERENCE_PLACEHOLDER}.` },
 
   {
     note: "the sentence stays theirs; the resolved PR rides along as context",
@@ -149,30 +146,4 @@ export function substituteReferences(args, referenceId) {
     );
 
   return { ...args, operations: substituted };
-}
-
-/**
- * How Riff would say a resolved reference out loud.
- *
- * Nobody reads a URL to someone, and nobody says "hash". A pull request spoken aloud is its number
- * and its subject, which is what the README's "that's 412, chunked uploads" is.
- */
-export function spokenReference(candidate) {
-  if (!candidate) return null;
-  const number = /#(\d+)$/.exec(candidate.identifier ?? "")?.[1];
-  const title = candidate.title?.toLowerCase();
-  return [number, title].filter(Boolean).join(", ") || candidate.identifier || "that one";
-}
-
-/**
- * Puts the spoken form into a scripted line the agent says.
- *
- * With nothing resolved the line becomes a question rather than a claim. Riff does not invent facts:
- * an unresolved reference stays unresolved and gets asked about, so a fallback that asserted "the
- * one you opened most recently" would be the agent making something up on the demo's behalf.
- */
-export function substituteSpokenReference(text, spoken) {
-  if (!text.includes(REFERENCE_PLACEHOLDER)) return text;
-  if (!spoken) return "which one do you mean? I couldn't find it.";
-  return text.replaceAll(REFERENCE_PLACEHOLDER, spoken);
 }

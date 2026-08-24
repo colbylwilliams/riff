@@ -59,7 +59,7 @@ A short session, start to finish:
 >
 > **You** — and it's related to the PR I just opened I think
 >
-> **Riff** — that's 412, chunked uploads.
+> **Riff** — *(silent; resolves and attaches it)*
 >
 > **You** — yeah that one. um, and don't touch the generated files, you know how it is
 >
