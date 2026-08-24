@@ -156,15 +156,6 @@ public final class ToolRegistry {
         return take
     }
 
-    /// Where a take rests when a submission leaves it open.
-    ///
-    /// A take that is not the one being spoken into must never be left `.drafting`: another take
-    /// became active while the host was answering, and two drafting takes is the state `DraftBook`
-    /// exists to prevent.
-    private func restingStatus(for take: Take) -> TakeStatus {
-        runtime.book.activeId == take.id ? .drafting : .parked
-    }
-
     /// Compact view of the draft returned after every mutation, so the agent always knows line ids.
     private func draftView(_ take: Take, includeRendered: Bool = false) throws -> JSONValue {
         var grouped: [String: [JSONValue]] = [:]
@@ -605,10 +596,17 @@ public final class ToolRegistry {
         var storeWarning: String?
 
         if result.submitted {
-            take.status = keepOpen ? restingStatus(for: take) : .submitted
+            // Everything that records the send happens before the store is awaited. A handler
+            // abandoned at its deadline part way through would otherwise leave a delivered take
+            // still active, and the next line spoken would be refused as an edit to a finished
+            // prompt while the model was told the send timed out.
+            let stoodDown = runtime.book.markSubmitted(take.id, keepOpen: keepOpen)
             var stored = artifact
             stored.status = take.status
             stored.submittedAt = runtime.now()
+
+            runtime.onSubmitted?(stored)
+            if stoodDown { runtime.onTakeChanged?(nil) }
 
             // The destination already has the prompt. Reporting a failed save as a failed
             // submission would invite a retry that sends it twice.
@@ -616,17 +614,6 @@ public final class ToolRegistry {
                 try await runtime.store.saveArtifact(stored)
             } catch {
                 storeWarning = "it was sent, but saving a copy failed: \(error)"
-            }
-
-            runtime.onSubmitted?(stored)
-            if !keepOpen, runtime.book.activeId == take.id {
-                // Without this the submitted take stays active and the next line spoken lands
-                // inside a prompt that has already been sent. Guarded on it still being the active
-                // take: another one can have become active while the host was answering, and
-                // clearing then would orphan a take that is still being drafted. Whatever made that
-                // take active already announced it, so there is nothing further to report here.
-                runtime.book.clearActive()
-                runtime.onTakeChanged?(nil)
             }
         }
         // A refusal needs no rollback either: the take was never moved out of where they left it.

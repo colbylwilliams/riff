@@ -587,6 +587,45 @@ describe("RiffSession", () => {
     );
   });
 
+  it("stands the sent take down before persisting, so a hung store cannot strand it", async () => {
+    // The store is held open. `withToolTimeout` abandons this handler, so anything left until after
+    // the save never happens: the take would stay active and terminal at once, and the next line
+    // spoken would be refused as an edit to a finished prompt.
+    store.saveArtifact = () => new Promise(() => {});
+
+    provider.say("the export button does nothing past a thousand rows");
+    await settle();
+    provider.callTool("draft_update", {
+      operations: [
+        { op: "upsert_line", section: "intent", text: "the export button does nothing past a thousand rows" },
+      ],
+    });
+    await settle();
+    const takeId = session.book.activeId!;
+
+    provider.callTool("submit_prompt", {});
+    await settle();
+
+    // Recorded already, without waiting for the save that will never land.
+    assert.equal(session.book.get(takeId)?.status, "submitted");
+    assert.equal(session.book.activeId, null, "a delivered take is no longer the one spoken into");
+    assert.ok(
+      events.some((event) => event.type === "submitted"),
+      "the send is reported when it happens, not when the copy is filed",
+    );
+
+    provider.say("also the avatars flicker on every scroll");
+    await settle();
+    const drafted = provider.callTool("draft_update", {
+      operations: [{ op: "upsert_line", section: "intent", text: "the avatars flicker on every scroll" }],
+    });
+    await settle();
+
+    const result = provider.resultFor(drafted);
+    assert.ok(!result.error, `the next line should still be draftable, got: ${result.error}`);
+    assert.notEqual(result.draft.take_id, takeId, "and it lands in a new prompt, not the sent one");
+  });
+
   it("gives the model a timeout rather than hanging when a host never answers", async () => {
     host.resolveReference = () => new Promise(() => {});
 

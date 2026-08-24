@@ -480,15 +480,24 @@ public final class DraftBook: @unchecked Sendable {
         for item in source?.context() ?? [] { take.attach(item) }
         takesById[take.id] = take
         order.append(take.id)
-
-        // Starting a new take sets the outgoing one aside rather than leaving it marked as being
-        // drafted, which is what `60-corrections` promises: they can come back to the parked one.
-        if let activeId, let previous = takesById[activeId], previous.status == .drafting {
-            previous.status = .parked
-        }
-
-        activeId = take.id
+        // Which also parks whatever was being spoken into, so `60-corrections` holds: they can come
+        // back to the one they were on.
+        setActive(take.id)
         return take
+    }
+
+    /// Makes one take the one being spoken into, or stands them all down when nil.
+    ///
+    /// Status is derived here rather than maintained alongside: the active take is the one being
+    /// drafted, and every take that has not finished is otherwise parked. Deriving it in one place
+    /// is what keeps the two from disagreeing — "drafting but not active" is the state in which a
+    /// second prompt quietly collects what was said for the first, and every caller that set a
+    /// status by hand was one more chance to produce it.
+    private func setActive(_ id: String?) {
+        activeId = id
+        for take in takes() where !isTerminal(take) {
+            take.status = take.id == id ? .drafting : .parked
+        }
     }
 
     @discardableResult
@@ -498,11 +507,7 @@ public final class DraftBook: @unchecked Sendable {
         guard !isTerminal(take) else {
             throw RiffError.tool("take \"\(id)\" was already \(take.status.rawValue); it cannot be reopened")
         }
-        if let activeId, activeId != id, let previous = takesById[activeId], previous.status == .drafting {
-            previous.status = .parked
-        }
-        if take.status == .parked { take.status = .drafting }
-        activeId = id
+        setActive(id)
         return take
     }
 
@@ -514,11 +519,28 @@ public final class DraftBook: @unchecked Sendable {
         guard !isTerminal(take) else {
             throw RiffError.tool("take \"\(id)\" was already \(take.status.rawValue); it cannot be parked")
         }
-        take.status = .parked
-        if activeId == id {
-            activeId = takes().first { $0.id != id && $0.status == .drafting }?.id
-        }
+        // Any take that is not the active one is already parked; only standing down the active one
+        // changes anything, and it leaves nothing active so the next thing said starts fresh.
+        if activeId == id { setActive(nil) }
         return take
+    }
+
+    /// Records that a take was delivered.
+    ///
+    /// `keepOpen` leaves it exactly where the speaker had it, because a prompt they are still
+    /// working on has not finished. Otherwise it is terminal, and if it was the one being spoken
+    /// into then nothing is: the next line lands in a new prompt rather than one already gone out.
+    ///
+    /// Returns whether this stood the active take down, so a caller can report that it did. A take
+    /// that was no longer active — another became active while the host was answering — leaves that
+    /// newer one alone.
+    @discardableResult
+    public func markSubmitted(_ id: String, keepOpen: Bool = false) -> Bool {
+        guard let take = takesById[id], !keepOpen else { return false }
+        take.status = .submitted
+        guard activeId == id else { return false }
+        setActive(nil)
+        return true
     }
 
     @discardableResult
@@ -528,9 +550,7 @@ public final class DraftBook: @unchecked Sendable {
             throw RiffError.tool("take \"\(id)\" was already submitted")
         }
         take.status = .discarded
-        if activeId == id { activeId = nil }
+        if activeId == id { setActive(nil) }
         return true
     }
-
-    public func clearActive() { activeId = nil }
 }

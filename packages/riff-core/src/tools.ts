@@ -1,4 +1,4 @@
-import type { AgentBundle, ContextItem, Line, Motif, PromptArtifact, TakeStatus, ToolDefinition } from "./types.ts";
+import type { AgentBundle, ContextItem, Line, Motif, PromptArtifact, ToolDefinition } from "./types.ts";
 import type { RiffHost, RiffStore } from "./host.ts";
 import type { Lexicon } from "./lexicon.ts";
 import type { UtteranceLedger } from "./ledger.ts";
@@ -166,17 +166,6 @@ function requireOpen(take: Take): Take {
     );
   }
   return take;
-}
-
-/**
- * Where a take rests when a submission leaves it open.
- *
- * A take that is not the one being spoken into must never be left `drafting`: another take became
- * active while the host was answering, and two drafting takes is the state `DraftBook` exists to
- * prevent.
- */
-function restingStatus(runtime: ToolRuntime, take: Take): TakeStatus {
-  return runtime.book.activeId === take.id ? "drafting" : "parked";
 }
 
 /** Compact view of the draft returned after every mutation, so the agent always knows line ids. */
@@ -568,8 +557,15 @@ const HANDLERS: Record<string, Handler> = {
     let storeWarning: string | undefined;
 
     if (result.submitted) {
-      take.status = args.keep_open ? restingStatus(runtime, take) : "submitted";
+      // Everything that records the send happens before the store is awaited. A handler abandoned
+      // at its deadline part way through would otherwise leave a delivered take still active, and
+      // the next line spoken would be refused as an edit to a finished prompt while the model was
+      // told the send timed out.
+      const stoodDown = runtime.book.markSubmitted(take.id, args.keep_open === true);
       const stored: PromptArtifact = { ...artifact, status: take.status, submittedAt: runtime.now() };
+
+      runtime.onSubmitted?.(stored);
+      if (stoodDown) runtime.onTakeChanged?.(null);
 
       // The destination already has the prompt. Reporting a failed save as a failed submission
       // would invite a retry that sends it twice, so the send is reported as what it is.
@@ -577,17 +573,6 @@ const HANDLERS: Record<string, Handler> = {
         await runtime.store.saveArtifact(stored);
       } catch (error) {
         storeWarning = `it was sent, but saving a copy failed: ${(error as Error).message}`;
-      }
-
-      runtime.onSubmitted?.(stored);
-      if (!args.keep_open && runtime.book.activeId === take.id) {
-        // Without this the submitted take stays active and the next line spoken lands inside a
-        // prompt that has already been sent. Guarded on it still being the active take: another one
-        // can have become active while the host was answering, and clearing then would orphan a
-        // take that is still being drafted. Whatever made that take active already announced it,
-        // so there is nothing further to report here.
-        runtime.book.clearActive();
-        runtime.onTakeChanged?.(null);
       }
     }
     // A refusal needs no rollback either: the take was never moved out of where they left it.

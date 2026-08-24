@@ -358,6 +358,12 @@ h2 {
   margin-bottom: 12px;
 }
 
+/* An author `display` beats the browser's `[hidden] { display: none }`, so the chooser needs this
+   to actually disappear — along with its margin — when there is only one prompt. */
+.takes[hidden] {
+  display: none;
+}
+
 /* The region the strip labels. Stacks its two views exactly as they stacked in the pane. */
 .prompt-view:focus-visible {
   outline: 2px solid var(--accent);

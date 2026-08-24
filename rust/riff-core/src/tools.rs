@@ -982,18 +982,8 @@ impl ToolRuntime {
         // The destination now has the prompt, so everything that records that fact happens before
         // the next await. A handler dropped at its deadline part way through this would leave a
         // sent take active, and the next thing spoken would land inside a prompt already gone out.
-        let status = if keep_open {
-            // A take that is not the one being spoken into must never be left drafting: another
-            // take became active while the host was answering.
-            if self.book.active_id() == Some(take_id.as_str()) {
-                TakeStatus::Drafting
-            } else {
-                TakeStatus::Parked
-            }
-        } else {
-            TakeStatus::Submitted
-        };
-        self.book.get_mut(&take_id).expect("take exists").status = status;
+        let stood_down = self.book.mark_submitted(&take_id, keep_open);
+        let status = self.book.get(&take_id).expect("take exists").status;
 
         let stored = PromptArtifact {
             status: Some(status),
@@ -1002,11 +992,7 @@ impl ToolRuntime {
         };
         self.record(ToolEffect::Submitted(Box::new(stored.clone())));
 
-        if !keep_open && self.book.active_id() == Some(take_id.as_str()) {
-            // Guarded on it still being the active take: another one can have become active while
-            // the host was answering, and clearing then would orphan a take that is still being
-            // drafted. Whatever made that take active already announced it.
-            self.book.clear_active();
+        if stood_down {
             self.record(ToolEffect::TakeChanged(None));
         }
 
