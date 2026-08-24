@@ -818,6 +818,16 @@ impl DraftBook {
         }
         let id = take.id.clone();
         self.takes.push(take);
+
+        // Starting a new take sets the outgoing one aside rather than leaving it marked as being
+        // drafted, which is what `60-corrections` promises: they can come back to the parked one.
+        if let Some(previous) = self.active_id.clone()
+            && let Some(take) = self.get_mut(&previous)
+            && take.status == TakeStatus::Drafting
+        {
+            take.status = TakeStatus::Parked;
+        }
+
         self.active_id = Some(id.clone());
         Ok(id)
     }

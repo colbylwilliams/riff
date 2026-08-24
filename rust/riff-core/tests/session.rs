@@ -138,7 +138,7 @@ fn records_what_was_said_and_lets_it_be_drafted_verbatim() {
     );
     assert_eq!(result.get("fidelity").and_then(Json::as_f64), Some(1.0));
 
-    let artifact = harness.session.artifact().expect("a take is active");
+    let artifact = harness.session.artifact(None).expect("a take is active");
     assert_eq!(artifact.lines.len(), 1);
     assert_eq!(artifact.lines[0].text, "the login page is broken on Safari");
     assert!(
@@ -182,7 +182,7 @@ fn rejects_a_paraphrase_and_tells_the_model_which_words_it_invented() {
     assert!(
         harness
             .session
-            .artifact()
+            .artifact(None)
             .expect("a take is active")
             .lines
             .is_empty()
@@ -221,7 +221,7 @@ fn attaches_a_resolved_reference_without_touching_what_they_said() {
         }),
     );
 
-    let artifact = harness.session.artifact().expect("a take is active");
+    let artifact = harness.session.artifact(None).expect("a take is active");
     assert_eq!(artifact.context.len(), 1);
     assert_eq!(
         artifact.context[0].resolved_from.as_deref(),
@@ -323,6 +323,67 @@ fn starts_a_fresh_take_after_submitting_so_nothing_lands_in_a_prompt_already_sen
         .expect("the sent take is still on file");
     assert_eq!(sent.status, TakeStatus::Submitted);
     assert_eq!(sent.lines().len(), 1);
+}
+
+#[test]
+fn parks_a_take_and_starts_a_new_one_when_the_subject_changes() {
+    let mut harness = Harness::start();
+    harness.say("the export button is broken");
+    harness.call(
+        "draft_update",
+        upsert("intent", "the export button is broken"),
+    );
+
+    let created = harness.call(
+        "takes",
+        Json::Object(json_object! { "action" => "new", "label" => "avatars" }),
+    );
+    let second = created.get_str("take_id").expect("a new take id");
+    assert_eq!(second, "t2");
+
+    // `60-corrections` tells the speaker they can come back to the parked one, so starting a take
+    // has to leave the outgoing one parked rather than still marked as being drafted.
+    let status = |harness: &Harness, id: &str| {
+        harness
+            .session
+            .takes()
+            .iter()
+            .find(|take| take.id == id)
+            .expect("the take is on file")
+            .status
+    };
+    assert_eq!(status(&harness, "t1"), TakeStatus::Parked);
+    assert_eq!(status(&harness, "t2"), TakeStatus::Drafting);
+
+    // Both prompts are open at once, and the parked one is readable without becoming active.
+    let parked = harness
+        .session
+        .artifact(Some("t1"))
+        .expect("the parked take still renders");
+    assert_eq!(parked.take_id, "t1");
+    assert_eq!(parked.lines.len(), 1);
+    assert_eq!(
+        harness
+            .session
+            .artifact(None)
+            .expect("a take is active")
+            .take_id,
+        "t2"
+    );
+
+    let switched = harness.call(
+        "takes",
+        Json::Object(json_object! { "action" => "switch", "take_id" => "t1" }),
+    );
+    let intent = switched
+        .get("draft")
+        .and_then(|draft| draft.get("sections"))
+        .and_then(|sections| sections.get("intent"))
+        .and_then(|lines| lines.as_array())
+        .map(|lines| lines.len());
+    assert_eq!(intent, Some(1));
+    assert_eq!(status(&harness, "t1"), TakeStatus::Drafting);
+    assert_eq!(status(&harness, "t2"), TakeStatus::Parked);
 }
 
 #[test]
@@ -1228,7 +1289,7 @@ fn hands_out_a_reference_id_that_still_means_the_same_thing_later() {
         }),
     );
 
-    let artifact = harness.session.artifact().expect("a take is active");
+    let artifact = harness.session.artifact(None).expect("a take is active");
     assert_eq!(artifact.context.len(), 1);
     assert_eq!(
         artifact.context[0].title, "second",

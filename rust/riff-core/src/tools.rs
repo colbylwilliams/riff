@@ -199,8 +199,10 @@ impl ToolRuntime {
     }
 
     /// The artifact for whichever take is active, if any.
-    pub fn active_artifact(&self) -> Option<PromptArtifact> {
-        let take = self.book.get(self.book.active_id()?)?;
+    /// A take by id, or the active one when no id is named.
+    pub fn take_artifact(&self, take_id: Option<&str>) -> Option<PromptArtifact> {
+        let id = take_id.or_else(|| self.book.active_id())?;
+        let take = self.book.get(id)?;
         self.artifact_for(take).ok()
     }
 
