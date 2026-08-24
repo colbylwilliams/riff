@@ -304,12 +304,15 @@ function handleEvent(event) {
       break;
 
     case "draft":
-      // A draft update is Riff writing, not the speaker changing prompt, so it never takes the pane
-      // away from one being read.
+      // Creating a take can evict the oldest empty one, so what is on screen is checked before it
+      // is used. A draft update is Riff writing, not the speaker changing prompt, so it never takes
+      // the pane away from one being read.
+      reconcileViewing();
       followTake(event.takeId);
       break;
 
     case "take":
+      reconcileViewing();
       // An explicit change of take is the speaker saying which prompt they are on, so the pane goes
       // with it. A null take means nothing is active and the next thing said starts a fresh one —
       // which happens right after a send, when the prompt that just went out is still worth looking
@@ -478,10 +481,20 @@ function renderTakes() {
   ui.takesHint.hidden = ui.takes.hidden;
 
   if (ui.takes.hidden) {
+    // With no tablist there is no tab to name the panel, and a `tabpanel` without one is an orphan
+    // that assistive technology announces as part of a widget the page is not showing. The
+    // semantics arrive with the tabs and leave with them.
     ui.takes.replaceChildren();
+    ui.promptView.removeAttribute("role");
+    ui.promptView.removeAttribute("tabindex");
     ui.promptView.removeAttribute("aria-labelledby");
     return;
   }
+
+  ui.promptView.setAttribute("role", "tabpanel");
+  // The panel holds focusable lines once there are any, but it is empty until then, so it stays
+  // reachable on its own.
+  ui.promptView.tabIndex = 0;
 
   const stale = new Map([...ui.takes.children].map((tab) => [tab.dataset.takeId, tab]));
   // A take can be dropped from the book while its tab has focus, which is the one case reconciling
@@ -513,6 +526,28 @@ function renderTakes() {
   if (focusedTakeId && !ui.takes.contains(document.activeElement)) {
     const selected = ui.takes.querySelector('[aria-selected="true"]');
     (ui.takes.querySelector(`[data-take-id="${focusedTakeId}"]`) ?? selected)?.focus();
+  }
+}
+
+/**
+ * Moves off a take the book no longer has.
+ *
+ * `DraftBook.create` drops the oldest empty take when the session is at its limit, and that can be
+ * the one on screen. Left alone the pane would keep showing a prompt that no longer exists, no tab
+ * would be selected, and the panel would name a tab that had been removed.
+ */
+function reconcileViewing() {
+  const takes = shown?.takes() ?? [];
+  if (takes.length === 0) {
+    viewingTakeId = null;
+    pinnedTakeId = null;
+    return;
+  }
+
+  if (pinnedTakeId !== null && !takes.some((take) => take.id === pinnedTakeId)) pinnedTakeId = null;
+  if (viewingTakeId !== null && !takes.some((take) => take.id === viewingTakeId)) {
+    const fallback = shown?.book.activeId ?? takes[takes.length - 1].id;
+    showTake(fallback, { pinned: false });
   }
 }
 
@@ -1026,9 +1061,17 @@ ui.typeForm.addEventListener("submit", (event) => {
 });
 
 for (const input of document.querySelectorAll('input[name="mode"]')) {
+  // `click` rather than `change`, because re-selecting the mode that is already checked is still
+  // someone choosing it and fires no `change` at all. It covers keyboard activation too, and
+  // setting `checked` from script fires neither — which is what keeps this an account of what the
+  // person did rather than of what the page did to itself.
+  input.addEventListener("click", () => {
+    modeChosen = true;
+    ui.micLabel.textContent = defaultMicLabel();
+  });
+  // Arrow keys move a radio group's selection in some browsers without a click, so the label still
+  // has to follow a plain selection change.
   input.addEventListener("change", () => {
-    // Only a real click lands here — setting `checked` from script fires no `change` — so this is
-    // exactly the signal `applyConfig` needs to stop choosing a mode on their behalf.
     modeChosen = true;
     ui.micLabel.textContent = defaultMicLabel();
   });

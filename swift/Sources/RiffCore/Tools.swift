@@ -156,6 +156,15 @@ public final class ToolRegistry {
         return take
     }
 
+    /// Where a take rests when a submission leaves it open.
+    ///
+    /// A take that is not the one being spoken into must never be left `.drafting`: another take
+    /// became active while the host was answering, and two drafting takes is the state `DraftBook`
+    /// exists to prevent.
+    private func restingStatus(for take: Take) -> TakeStatus {
+        runtime.book.activeId == take.id ? .drafting : .parked
+    }
+
     /// Compact view of the draft returned after every mutation, so the agent always knows line ids.
     private func draftView(_ take: Take, includeRendered: Bool = false) throws -> JSONValue {
         var grouped: [String: [JSONValue]] = [:]
@@ -572,33 +581,31 @@ public final class ToolRegistry {
         let target = args["target"]?.stringValue
         let keepOpen = args["keep_open"]?.boolValue == true
         if let target { take.target = target }
-        take.status = .ready
 
-        let artifact = try buildArtifact(take, options: BuildArtifactOptions(
+        // The take stays where the speaker left it across the await, and only the artifact the host
+        // receives is marked ready. Moving the take first would strand it in `.ready` when this
+        // handler is abandoned at its deadline, and any rollback afterwards has to guess what to put
+        // back — which is how a parked take gets resurrected as drafting by a send that never
+        // happened.
+        var artifact = try buildArtifact(take, options: BuildArtifactOptions(
             render: RenderOptions(config: runtime.bundle.render, profile: runtime.renderProfile),
             lexicon: runtime.lexicon,
             utteranceCount: runtime.ledger.count,
             now: runtime.now(),
             provenance: runtime.provenance?()
         ))
+        artifact.status = .ready
 
-        let result: SubmitResult
-        do {
-            result = try await runtime.host.submitPrompt(
-                artifact,
-                options: SubmitOptions(target: target, keepOpen: keepOpen)
-            )
-        } catch {
-            // The registry turns this into a tool error, so the status has to be put back here or
-            // the take stays `.ready` for a submission that never happened.
-            take.status = .drafting
-            throw error
-        }
+        // No rollback on failure: the take was never moved, so it is already as they left it.
+        let result = try await runtime.host.submitPrompt(
+            artifact,
+            options: SubmitOptions(target: target, keepOpen: keepOpen)
+        )
 
         var storeWarning: String?
 
         if result.submitted {
-            take.status = keepOpen ? .drafting : .submitted
+            take.status = keepOpen ? restingStatus(for: take) : .submitted
             var stored = artifact
             stored.status = take.status
             stored.submittedAt = runtime.now()
@@ -616,9 +623,8 @@ public final class ToolRegistry {
                 runtime.book.clearActive()
                 runtime.onTakeChanged?(nil)
             }
-        } else {
-            take.status = .drafting
         }
+        // A refusal needs no rollback either: the take was never moved out of where they left it.
 
         return json([
             ("submitted", .bool(result.submitted)),

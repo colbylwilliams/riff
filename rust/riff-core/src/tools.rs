@@ -198,7 +198,6 @@ impl ToolRuntime {
         )
     }
 
-    /// The artifact for whichever take is active, if any.
     /// A take by id, or the active one when no id is named.
     pub fn take_artifact(&self, take_id: Option<&str>) -> Option<PromptArtifact> {
         let id = take_id.or_else(|| self.book.active_id())?;
@@ -984,7 +983,13 @@ impl ToolRuntime {
         // the next await. A handler dropped at its deadline part way through this would leave a
         // sent take active, and the next thing spoken would land inside a prompt already gone out.
         let status = if keep_open {
-            TakeStatus::Drafting
+            // A take that is not the one being spoken into must never be left drafting: another
+            // take became active while the host was answering.
+            if self.book.active_id() == Some(take_id.as_str()) {
+                TakeStatus::Drafting
+            } else {
+                TakeStatus::Parked
+            }
         } else {
             TakeStatus::Submitted
         };

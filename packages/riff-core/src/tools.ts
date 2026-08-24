@@ -1,4 +1,4 @@
-import type { AgentBundle, ContextItem, Line, Motif, PromptArtifact, ToolDefinition } from "./types.ts";
+import type { AgentBundle, ContextItem, Line, Motif, PromptArtifact, TakeStatus, ToolDefinition } from "./types.ts";
 import type { RiffHost, RiffStore } from "./host.ts";
 import type { Lexicon } from "./lexicon.ts";
 import type { UtteranceLedger } from "./ledger.ts";
@@ -166,6 +166,17 @@ function requireOpen(take: Take): Take {
     );
   }
   return take;
+}
+
+/**
+ * Where a take rests when a submission leaves it open.
+ *
+ * A take that is not the one being spoken into must never be left `drafting`: another take became
+ * active while the host was answering, and two drafting takes is the state `DraftBook` exists to
+ * prevent.
+ */
+function restingStatus(runtime: ToolRuntime, take: Take): TakeStatus {
+  return runtime.book.activeId === take.id ? "drafting" : "parked";
 }
 
 /** Compact view of the draft returned after every mutation, so the agent always knows line ids. */
@@ -530,35 +541,34 @@ const HANDLERS: Record<string, Handler> = {
     }
 
     if (args.target) take.target = args.target;
-    take.status = "ready";
 
-    const artifact = buildArtifact(take, {
-      config: runtime.bundle.render,
-      ...(runtime.renderProfile ? { profile: runtime.renderProfile } : {}),
-      lexicon: runtime.lexicon,
-      utteranceCount: runtime.ledger.size,
-      now: runtime.now(),
-      ...(runtime.provenance ? { provenance: runtime.provenance() } : {}),
+    // The take stays where the speaker left it across the await, and only the artifact the host
+    // receives is marked ready. Moving the take first would strand it in `ready` when this handler
+    // is abandoned at its deadline, and any rollback afterwards has to guess what to put back —
+    // which is how a parked take gets resurrected as drafting by a send that never happened.
+    const artifact: PromptArtifact = {
+      ...buildArtifact(take, {
+        config: runtime.bundle.render,
+        ...(runtime.renderProfile ? { profile: runtime.renderProfile } : {}),
+        lexicon: runtime.lexicon,
+        utteranceCount: runtime.ledger.size,
+        now: runtime.now(),
+        ...(runtime.provenance ? { provenance: runtime.provenance() } : {}),
+      }),
+      status: "ready",
+    };
+
+    // No rollback on failure: the take was never moved, so it is already exactly as they left it.
+    const result = await runtime.host.submitPrompt(artifact, {
+      ...(args.target ? { target: args.target } : {}),
+      ...(args.keep_open ? { keepOpen: args.keep_open } : {}),
+      ...(call.signal ? { signal: call.signal } : {}),
     });
-
-    let result: Awaited<ReturnType<typeof runtime.host.submitPrompt>>;
-    try {
-      result = await runtime.host.submitPrompt(artifact, {
-        ...(args.target ? { target: args.target } : {}),
-        ...(args.keep_open ? { keepOpen: args.keep_open } : {}),
-        ...(call.signal ? { signal: call.signal } : {}),
-      });
-    } catch (error) {
-      // The registry turns this into a tool error, so the status has to be put back here or the
-      // take stays `ready` for a submission that never happened.
-      take.status = "drafting";
-      throw error;
-    }
 
     let storeWarning: string | undefined;
 
     if (result.submitted) {
-      take.status = args.keep_open ? "drafting" : "submitted";
+      take.status = args.keep_open ? restingStatus(runtime, take) : "submitted";
       const stored: PromptArtifact = { ...artifact, status: take.status, submittedAt: runtime.now() };
 
       // The destination already has the prompt. Reporting a failed save as a failed submission
@@ -576,9 +586,8 @@ const HANDLERS: Record<string, Handler> = {
         runtime.book.clearActive();
         runtime.onTakeChanged?.(null);
       }
-    } else {
-      take.status = "drafting";
     }
+    // A refusal needs no rollback either: the take was never moved out of where they left it.
 
     return {
       submitted: result.submitted,

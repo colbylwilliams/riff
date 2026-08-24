@@ -494,6 +494,48 @@ describe("RiffSession", () => {
     assert.equal(session.book.get(takeId)?.status, "drafting");
   });
 
+  it("does not resurrect a parked take when a submission fails after the active take changed", async () => {
+    // The host is held open so `takes new` in the same batch runs while the submission is in
+    // flight, which is the ordering `Promise.all` produces for one turn's tool calls.
+    let refuse: (error: Error) => void;
+    host.submitPrompt = () =>
+      new Promise((_resolve, reject) => {
+        refuse = reject;
+      });
+
+    provider.say("the export button does nothing past a thousand rows");
+    await settle();
+    provider.callTool("draft_update", {
+      operations: [
+        { op: "upsert_line", section: "intent", text: "the export button does nothing past a thousand rows" },
+      ],
+    });
+    await settle();
+    const firstTake = session.book.activeId!;
+
+    const [submitCall, newCall] = provider.callTools([
+      { name: "submit_prompt", args: {} },
+      { name: "takes", args: { action: "new", label: "avatars" } },
+    ]);
+    await settle();
+
+    const secondTake = provider.resultFor(newCall!).take_id;
+    assert.equal(session.book.get(firstTake)?.status, "parked");
+
+    refuse!(new Error("the destination is unreachable"));
+    await settle();
+
+    assert.match(provider.resultFor(submitCall!).error, /unreachable/);
+    // A failed send has no business promoting a take the speaker has already moved on from.
+    assert.equal(session.book.get(firstTake)?.status, "parked");
+    assert.equal(session.book.get(secondTake)?.status, "drafting");
+    assert.equal(
+      session.takes().filter((take) => take.status === "drafting").length,
+      1,
+      "exactly one take is ever the one being spoken into",
+    );
+  });
+
   it("gives the model a timeout rather than hanging when a host never answers", async () => {
     host.resolveReference = () => new Promise(() => {});
 
