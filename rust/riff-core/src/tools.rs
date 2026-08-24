@@ -147,6 +147,13 @@ impl ToolRuntime {
     /// The deadline exists so a host that never answers cannot stall a turn, but past the point
     /// where the world has changed there is nothing left to give up on. Reporting a timeout there
     /// would tell the speaker their prompt did not go when it did.
+    ///
+    /// Held on the runtime rather than per call, which is safe here and only here: `with_deadline`
+    /// drops the abandoned future, so a handler that ran out of time cannot resume and write into
+    /// the next call's slot, and the `&mut self` borrow keeps anything else out for as long as the
+    /// future lives. The TypeScript and Swift engines scope this to the call instead, because both
+    /// abandon work by leaving it running. Anything here that starts a handler without owning it
+    /// for its whole life has to move this to the call too.
     fn commit(&mut self, result: Json) {
         self.committed = Some(result);
     }
@@ -198,9 +205,10 @@ impl ToolRuntime {
         )
     }
 
-    /// The artifact for whichever take is active, if any.
-    pub fn active_artifact(&self) -> Option<PromptArtifact> {
-        let take = self.book.get(self.book.active_id()?)?;
+    /// A take by id, or the active one when no id is named.
+    pub fn take_artifact(&self, take_id: Option<&str>) -> Option<PromptArtifact> {
+        let id = take_id.or_else(|| self.book.active_id())?;
+        let take = self.book.get(id)?;
         self.artifact_for(take).ok()
     }
 
@@ -258,13 +266,22 @@ impl ToolRuntime {
                 duration_ms,
                 effects,
             },
-            Some(Err(error)) => ToolOutcome {
-                effects,
-                ..ToolOutcome::error(error.to_string(), duration_ms)
+            // A handler that committed a result reports it, whether it then ran out of time or
+            // failed outright. Committing says the world has already changed, which no amount of
+            // giving up afterwards can undo, and saying otherwise would tell the model a prompt the
+            // destination has already taken did not go.
+            Some(Err(error)) => match committed {
+                Some(result) => ToolOutcome {
+                    ok: true,
+                    result,
+                    duration_ms,
+                    effects,
+                },
+                None => ToolOutcome {
+                    effects,
+                    ..ToolOutcome::error(error.to_string(), duration_ms)
+                },
             },
-            // A handler that committed a result before running out of time reports it. Saying the
-            // tool never answered would tell the model a prompt the destination has already taken
-            // did not go.
             None => match committed {
                 Some(result) => ToolOutcome {
                     ok: true,
@@ -981,12 +998,8 @@ impl ToolRuntime {
         // The destination now has the prompt, so everything that records that fact happens before
         // the next await. A handler dropped at its deadline part way through this would leave a
         // sent take active, and the next thing spoken would land inside a prompt already gone out.
-        let status = if keep_open {
-            TakeStatus::Drafting
-        } else {
-            TakeStatus::Submitted
-        };
-        self.book.get_mut(&take_id).expect("take exists").status = status;
+        let stood_down = self.book.mark_submitted(&take_id, keep_open);
+        let status = self.book.get(&take_id).expect("take exists").status;
 
         let stored = PromptArtifact {
             status: Some(status),
@@ -995,8 +1008,7 @@ impl ToolRuntime {
         };
         self.record(ToolEffect::Submitted(Box::new(stored.clone())));
 
-        if !keep_open {
-            self.book.clear_active();
+        if stood_down {
             self.record(ToolEffect::TakeChanged(None));
         }
 

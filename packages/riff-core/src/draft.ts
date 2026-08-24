@@ -403,6 +403,23 @@ export class DraftBook {
     return this.create();
   }
 
+  /**
+   * Makes one take the one being spoken into, or stands them all down when null.
+   *
+   * Status is derived here rather than maintained alongside: the active take is the one being
+   * drafted, and every take that has not finished is otherwise parked. Deriving it in one place is
+   * what keeps the two from disagreeing — "drafting but not active" is the state in which a second
+   * prompt quietly collects what was said for the first, and every caller that set a status by hand
+   * was one more chance to produce it.
+   */
+  #setActive(id: string | null): void {
+    this.#activeId = id;
+    for (const take of this.#takes.values()) {
+      if (isTerminal(take)) continue;
+      take.status = take.id === id ? "drafting" : "parked";
+    }
+  }
+
   create(label?: string, carryContextFrom?: Take): Take {
     const live = this.takes().filter((take) => take.status !== "discarded" && take.status !== "submitted");
     if (live.length >= this.#policy.maxTakes) {
@@ -414,7 +431,9 @@ export class DraftBook {
     const take = new Take(`t${++this.#sequence}`, this.#now(), label);
     if (carryContextFrom) for (const item of carryContextFrom.context()) take.attachContext(item);
     this.#takes.set(take.id, take);
-    this.#activeId = take.id;
+    // Which also parks whatever was being spoken into, so `60-corrections` holds: they can come
+    // back to the one they were on.
+    this.#setActive(take.id);
     return take;
   }
 
@@ -423,10 +442,7 @@ export class DraftBook {
     if (!take) return undefined;
     // Switching to a finished take would make it the target of the next thing spoken.
     if (isTerminal(take)) throw new Error(`take "${id}" was already ${take.status}; it cannot be reopened`);
-    const previous = this.#activeId ? this.#takes.get(this.#activeId) : undefined;
-    if (previous && previous.id !== id && previous.status === "drafting") previous.status = "parked";
-    take.status = take.status === "parked" ? "drafting" : take.status;
-    this.#activeId = id;
+    this.#setActive(id);
     return take;
   }
 
@@ -436,17 +452,30 @@ export class DraftBook {
     // Parking a finished take would move it out of a terminal state, and switching back would then
     // promote it to drafting — which is how every guard downstream gets bypassed.
     if (isTerminal(take)) throw new Error(`take "${id}" was already ${take.status}; it cannot be parked`);
-    take.status = "parked";
-    if (this.#activeId === id) {
-      const next = this.takes().find((candidate) => candidate.id !== id && candidate.status === "drafting");
-      this.#activeId = next?.id ?? null;
-    }
+    // Any take that is not the active one is already parked; only standing down the active one
+    // changes anything, and it leaves nothing active so the next thing said starts fresh.
+    if (this.#activeId === id) this.#setActive(null);
     return take;
   }
 
-  /** Leaves no take active, so the next line spoken starts a fresh one. */
-  clearActive(): void {
-    this.#activeId = null;
+  /**
+   * Records that a take was delivered.
+   *
+   * `keepOpen` leaves it exactly where the speaker had it, because a prompt they are still working
+   * on has not finished. Otherwise it is terminal, and if it was the one being spoken into then
+   * nothing is: the next line lands in a new prompt rather than one that has already gone out.
+   *
+   * Returns whether this stood the active take down, so a caller can report that it did. A take
+   * that was no longer active — another became active while the host was answering — leaves that
+   * newer one alone.
+   */
+  markSubmitted(id: string, keepOpen = false): boolean {
+    const take = this.#takes.get(id);
+    if (!take || keepOpen) return false;
+    take.status = "submitted";
+    if (this.#activeId !== id) return false;
+    this.#setActive(null);
+    return true;
   }
 
   discard(id: string): boolean {
@@ -454,7 +483,7 @@ export class DraftBook {
     if (!take) return false;
     if (take.status === "submitted") throw new Error(`take "${id}" was already submitted`);
     take.status = "discarded";
-    if (this.#activeId === id) this.#activeId = null;
+    if (this.#activeId === id) this.#setActive(null);
     return true;
   }
 }

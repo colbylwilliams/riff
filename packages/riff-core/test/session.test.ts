@@ -258,7 +258,7 @@ describe("RiffSession", () => {
       operations: [{ op: "upsert_line", section: "intent", text: "the export button is broken" }],
     });
     await settle();
-    const firstTake = session.book.activeId;
+    const firstTake = session.book.activeId!;
 
     const created = provider.callTool("takes", { action: "new", label: "avatars" });
     await settle();
@@ -266,10 +266,22 @@ describe("RiffSession", () => {
 
     assert.notEqual(firstTake, secondTake);
     assert.equal(session.artifact()?.lines.length, 0);
+    // `60-corrections` tells the speaker they can come back to the parked one, so starting a take
+    // has to leave the outgoing one parked rather than still marked as being drafted.
+    assert.equal(session.book.get(firstTake)?.status, "parked");
+    assert.equal(session.book.get(secondTake)?.status, "drafting");
+
+    // Both prompts are open at once, and the parked one is readable without becoming active.
+    const parked = session.artifact(firstTake);
+    assert.equal(parked?.takeId, firstTake);
+    assert.equal(parked?.lines.length, 1);
+    assert.equal(session.artifact()?.takeId, secondTake);
 
     const switched = provider.callTool("takes", { action: "switch", take_id: firstTake });
     await settle();
     assert.equal(provider.resultFor(switched).draft.sections.intent.length, 1);
+    assert.equal(session.book.get(firstTake)?.status, "drafting");
+    assert.equal(session.book.get(secondTake)?.status, "parked");
   });
 
   it("submits only what was captured, with provenance attached", async () => {
@@ -480,6 +492,168 @@ describe("RiffSession", () => {
 
     assert.match(provider.resultFor(callId).error, /unreachable/);
     assert.equal(session.book.get(takeId)?.status, "drafting");
+  });
+
+  it("does not resurrect a parked take when a submission fails after the active take changed", async () => {
+    // The host is held open so `takes new` in the same batch runs while the submission is in
+    // flight, which is the ordering `Promise.all` produces for one turn's tool calls.
+    let refuse: (error: Error) => void;
+    host.submitPrompt = () =>
+      new Promise((_resolve, reject) => {
+        refuse = reject;
+      });
+
+    provider.say("the export button does nothing past a thousand rows");
+    await settle();
+    provider.callTool("draft_update", {
+      operations: [
+        { op: "upsert_line", section: "intent", text: "the export button does nothing past a thousand rows" },
+      ],
+    });
+    await settle();
+    const firstTake = session.book.activeId!;
+
+    const [submitCall, newCall] = provider.callTools([
+      { name: "submit_prompt", args: {} },
+      { name: "takes", args: { action: "new", label: "avatars" } },
+    ]);
+    await settle();
+
+    const secondTake = provider.resultFor(newCall!).take_id;
+    assert.equal(session.book.get(firstTake)?.status, "parked");
+
+    refuse!(new Error("the destination is unreachable"));
+    await settle();
+
+    assert.match(provider.resultFor(submitCall!).error, /unreachable/);
+    // A failed send has no business promoting a take the speaker has already moved on from.
+    assert.equal(session.book.get(firstTake)?.status, "parked");
+    assert.equal(session.book.get(secondTake)?.status, "drafting");
+    assert.equal(
+      session.takes().filter((take) => take.status === "drafting").length,
+      1,
+      "exactly one take is ever the one being spoken into",
+    );
+  });
+
+  it("does not orphan a newer take when a submission succeeds after the active take changed", async () => {
+    // The mirror of the failure case: the send goes through, but another take became active while
+    // the host was answering, so clearing the active take would strand it.
+    let deliver: (result: { submitted: boolean; destination: string }) => void;
+    host.submitPrompt = () =>
+      new Promise((resolve) => {
+        deliver = resolve;
+      });
+
+    provider.say("the export button does nothing past a thousand rows");
+    await settle();
+    provider.callTool("draft_update", {
+      operations: [
+        { op: "upsert_line", section: "intent", text: "the export button does nothing past a thousand rows" },
+      ],
+    });
+    await settle();
+    const firstTake = session.book.activeId!;
+
+    const [submitCall, newCall] = provider.callTools([
+      { name: "submit_prompt", args: {} },
+      { name: "takes", args: { action: "new", label: "avatars" } },
+    ]);
+    await settle();
+    const secondTake = provider.resultFor(newCall!).take_id;
+
+    deliver!({ submitted: true, destination: "test" });
+    await settle();
+
+    assert.equal(provider.resultFor(submitCall!).submitted, true);
+    assert.equal(session.book.get(firstTake)?.status, "submitted");
+    // The take they moved on to is still the one being spoken into, so the next line lands in it
+    // rather than starting a third.
+    assert.equal(session.book.activeId, secondTake);
+    assert.equal(session.book.get(secondTake)?.status, "drafting");
+
+    provider.say("also the avatars flicker on every scroll");
+    await settle();
+    const drafted = provider.callTool("draft_update", {
+      operations: [{ op: "upsert_line", section: "intent", text: "the avatars flicker on every scroll" }],
+    });
+    await settle();
+
+    assert.equal(provider.resultFor(drafted).draft.take_id, secondTake, "no third take was started");
+    assert.equal(
+      session.takes().filter((take) => take.status === "drafting").length,
+      1,
+      "exactly one take is ever the one being spoken into",
+    );
+  });
+
+  it("stands the sent take down before persisting, so a hung store cannot strand it", async () => {
+    // The store is held open. `withToolTimeout` abandons this handler, so anything left until after
+    // the save never happens: the take would stay active and terminal at once, and the next line
+    // spoken would be refused as an edit to a finished prompt.
+    store.saveArtifact = () => new Promise(() => {});
+
+    provider.say("the export button does nothing past a thousand rows");
+    await settle();
+    provider.callTool("draft_update", {
+      operations: [
+        { op: "upsert_line", section: "intent", text: "the export button does nothing past a thousand rows" },
+      ],
+    });
+    await settle();
+    const takeId = session.book.activeId!;
+
+    const callId = provider.callTool("submit_prompt", {});
+    // Long enough for the deadline to fire on the save that never lands.
+    await new Promise((resolve) => setTimeout(resolve, bundle.session.limits.toolTimeoutMs + 200));
+
+    // The prompt was delivered, so that is what the model is told — reporting a timeout here is what
+    // makes it send a second time.
+    const result = provider.resultFor(callId);
+    assert.equal(result.submitted, true, "a delivered prompt is never reported as a timeout");
+    assert.ok(!result.error, `expected the committed result, got: ${result.error}`);
+
+    // Recorded already, without waiting for the save that will never land.
+    assert.equal(session.book.get(takeId)?.status, "submitted");
+    assert.equal(session.book.activeId, null, "a delivered take is no longer the one spoken into");
+    assert.ok(
+      events.some((event) => event.type === "submitted"),
+      "the send is reported when it happens, not when the copy is filed",
+    );
+
+    provider.say("also the avatars flicker on every scroll");
+    await settle();
+    const drafted = provider.callTool("draft_update", {
+      operations: [{ op: "upsert_line", section: "intent", text: "the avatars flicker on every scroll" }],
+    });
+    await settle();
+
+    const next = provider.resultFor(drafted);
+    assert.ok(!next.error, `the next line should still be draftable, got: ${next.error}`);
+    assert.notEqual(next.draft.take_id, takeId, "and it lands in a new prompt, not the sent one");
+  });
+
+  it("still reports a send that a host never confirms as a timeout", async () => {
+    // The other half of the same rule: nothing outside Riff changed, so there is nothing committed
+    // and giving up is the honest answer.
+    host.submitPrompt = () => new Promise(() => {});
+
+    provider.say("the export button does nothing past a thousand rows");
+    await settle();
+    provider.callTool("draft_update", {
+      operations: [
+        { op: "upsert_line", section: "intent", text: "the export button does nothing past a thousand rows" },
+      ],
+    });
+    await settle();
+    const takeId = session.book.activeId!;
+
+    const callId = provider.callTool("submit_prompt", {});
+    await new Promise((resolve) => setTimeout(resolve, bundle.session.limits.toolTimeoutMs + 200));
+
+    assert.match(provider.resultFor(callId).error, /did not answer/);
+    assert.equal(session.book.get(takeId)?.status, "drafting", "an unsent take is left where it was");
+    assert.equal(session.book.activeId, takeId);
   });
 
   it("gives the model a timeout rather than hanging when a host never answers", async () => {

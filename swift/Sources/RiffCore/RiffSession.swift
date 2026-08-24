@@ -240,9 +240,12 @@ public final class RiffSession {
         setState(.listening)
     }
 
-    /// The active take as it stands right now. Always safe to read mid-conversation.
-    public func artifact() throws -> PromptArtifact? {
-        guard let id = book.activeId, let take = book.take(id) else { return nil }
+    /// A take as it stands right now, the active one by default. Always safe to read mid-conversation.
+    ///
+    /// Naming a take is how an embedder shows a prompt that is not the one being spoken into: a
+    /// session holds several, and a parked one has to be readable without making it active.
+    public func artifact(takeId: String? = nil) throws -> PromptArtifact? {
+        guard let id = takeId ?? book.activeId, let take = book.take(id) else { return nil }
         return try buildArtifact(take, options: BuildArtifactOptions(
             render: RenderOptions(config: bundle.render, profile: renderProfile),
             lexicon: lexicon,

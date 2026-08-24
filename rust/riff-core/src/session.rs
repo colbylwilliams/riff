@@ -504,10 +504,14 @@ impl RiffSession {
         self.set_state(SessionState::Listening);
     }
 
-    /// The active take as it stands right now. Always safe to read mid-conversation.
-    pub fn artifact(&mut self) -> Option<PromptArtifact> {
+    /// A take as it stands right now, the active one by default. Always safe to read
+    /// mid-conversation.
+    ///
+    /// Naming a take is how an embedder shows a prompt that is not the one being spoken into: a
+    /// session holds several, and a parked one has to be readable without making it active.
+    pub fn artifact(&mut self, take_id: Option<&str>) -> Option<PromptArtifact> {
         self.refresh_provenance();
-        self.runtime.active_artifact()
+        self.runtime.take_artifact(take_id)
     }
 
     /// Every take in the session.

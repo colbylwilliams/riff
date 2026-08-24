@@ -30,7 +30,6 @@
       <div class="status">
         <span id="state-pill" class="pill" role="status" aria-live="polite" data-state="idle">idle</span>
         <span id="host-pill" class="pill" title="Which world Riff looks things up in">host: demo</span>
-        <span id="take-label" class="muted"></span>
         <button id="open-keys" class="ghost" type="button">keys</button>
       </div>
 
@@ -62,8 +61,15 @@
           <button id="toggle-markdown" class="ghost" type="button">markdown</button>
         </h2>
         <p class="hint">Hover a line to see which words it came from.</p>
-        <div id="draft" class="draft"></div>
-        <pre id="markdown" class="markdown" hidden></pre>
+        <div id="takes" class="takes" role="tablist" aria-label="Session prompts" hidden></div>
+        <p id="takes-hint" class="hint" hidden>
+          A session holds several unsent prompts. Riff opens and switches them when the subject
+          changes; pick one here to read it.
+        </p>
+        <div id="prompt-view" class="prompt-view">
+          <div id="draft" class="draft"></div>
+          <pre id="markdown" class="markdown" hidden></pre>
+        </div>
       </section>
 
       <section class="pane">

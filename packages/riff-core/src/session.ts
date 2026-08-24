@@ -216,9 +216,14 @@ export class RiffSession {
     this.#setState("listening");
   }
 
-  /** The active take as it stands right now. Always safe to read mid-conversation. */
-  artifact(): PromptArtifact | null {
-    const id = this.book.activeId;
+  /**
+   * A take as it stands right now, the active one by default. Always safe to read mid-conversation.
+   *
+   * Naming a take is how an embedder shows a prompt that is not the one being spoken into: a session
+   * holds several, and a parked one has to be readable without making it active.
+   */
+  artifact(takeId?: string): PromptArtifact | null {
+    const id = takeId ?? this.book.activeId;
     const take = id ? this.book.get(id) : undefined;
     return take ? this.#buildArtifact(take) : null;
   }

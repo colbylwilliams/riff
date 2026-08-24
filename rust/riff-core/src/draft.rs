@@ -818,8 +818,31 @@ impl DraftBook {
         }
         let id = take.id.clone();
         self.takes.push(take);
-        self.active_id = Some(id.clone());
+        // Which also parks whatever was being spoken into, so `60-corrections` holds: they can come
+        // back to the one they were on.
+        self.set_active(Some(&id));
         Ok(id)
+    }
+
+    /// Makes one take the one being spoken into, or stands them all down when `None`.
+    ///
+    /// Status is derived here rather than maintained alongside: the active take is the one being
+    /// drafted, and every take that has not finished is otherwise parked. Deriving it in one place
+    /// is what keeps the two from disagreeing — "drafting but not active" is the state in which a
+    /// second prompt quietly collects what was said for the first, and every caller that set a
+    /// status by hand was one more chance to produce it.
+    fn set_active(&mut self, id: Option<&str>) {
+        self.active_id = id.map(str::to_owned);
+        for take in &mut self.takes {
+            if take.is_terminal() {
+                continue;
+            }
+            take.status = if Some(take.id.as_str()) == id {
+                TakeStatus::Drafting
+            } else {
+                TakeStatus::Parked
+            };
+        }
     }
 
     /// Makes another take the one being spoken into.
@@ -835,18 +858,7 @@ impl DraftBook {
             )));
         }
 
-        if let Some(previous) = self.active_id.clone()
-            && previous != id
-            && let Some(take) = self.get_mut(&previous)
-            && take.status == TakeStatus::Drafting
-        {
-            take.status = TakeStatus::Parked;
-        }
-
-        if self.takes[index].status == TakeStatus::Parked {
-            self.takes[index].status = TakeStatus::Drafting;
-        }
-        self.active_id = Some(id.to_owned());
+        self.set_active(Some(id));
         Ok(Some(&self.takes[index]))
     }
 
@@ -863,20 +875,36 @@ impl DraftBook {
                 self.takes[index].status.as_str()
             )));
         }
-        self.takes[index].status = TakeStatus::Parked;
+        // Any take that is not the active one is already parked; only standing down the active one
+        // changes anything, and it leaves nothing active so the next thing said starts fresh.
         if self.active_id.as_deref() == Some(id) {
-            self.active_id = self
-                .takes
-                .iter()
-                .find(|take| take.id != id && take.status == TakeStatus::Drafting)
-                .map(|take| take.id.clone());
+            self.set_active(None);
         }
         Ok(true)
     }
 
-    /// Leaves no take active, so the next line spoken starts a fresh one.
-    pub fn clear_active(&mut self) {
-        self.active_id = None;
+    /// Records that a take was delivered.
+    ///
+    /// `keep_open` leaves it exactly where the speaker had it, because a prompt they are still
+    /// working on has not finished. Otherwise it is terminal, and if it was the one being spoken
+    /// into then nothing is: the next line lands in a new prompt rather than one already gone out.
+    ///
+    /// Returns whether this stood the active take down, so a caller can report that it did. A take
+    /// that was no longer active — another became active while the host was answering — leaves that
+    /// newer one alone.
+    pub fn mark_submitted(&mut self, id: &str, keep_open: bool) -> bool {
+        if keep_open {
+            return false;
+        }
+        let Some(index) = self.takes.iter().position(|take| take.id == id) else {
+            return false;
+        };
+        self.takes[index].status = TakeStatus::Submitted;
+        if self.active_id.as_deref() != Some(id) {
+            return false;
+        }
+        self.set_active(None);
+        true
     }
 
     /// Throws a take away.
@@ -891,7 +919,7 @@ impl DraftBook {
         }
         self.takes[index].status = TakeStatus::Discarded;
         if self.active_id.as_deref() == Some(id) {
-            self.active_id = None;
+            self.set_active(None);
         }
         Ok(true)
     }

@@ -33,9 +33,9 @@ Sending is a **dry run** unless you tick *file a real issue*. The script ends by
 
 ## The two modes
 
-**Scripted** replays the conversation from the project [README](../../README.md) through [`scripted-provider.js`](public/scripted-provider.js). It is not a mockup. Every line goes into the real utterance ledger, every tool call is dispatched by the real registry, and the prompt on screen is produced by the same engine a live model drives — the script only stands in for the model deciding what to call. Swapping it for [`OpenAIRealtimeProvider`](../../packages/riff-openai-realtime/src/provider.ts) changes who is talking and nothing else, which is the provider seam doing its job.
+**Scripted** replays the conversation from the project [README](../../README.md) through [`scripted-provider.js`](public/scripted-provider.js), plus one beat the README leaves out: partway through, the speaker changes subject, and Riff opens a second prompt rather than folding the tangent into the first. It is not a mockup. Every line goes into the real utterance ledger, every tool call is dispatched by the real registry, and the prompt on screen is produced by the same engine a live model drives — the script only stands in for the model deciding what to call. Swapping it for [`OpenAIRealtimeProvider`](../../packages/riff-openai-realtime/src/provider.ts) changes who is talking and nothing else, which is the provider seam doing its job.
 
-**Live mic** opens a real WebRTC session. The microphone is published as a media track rather than pushed through `sendAudio`, so the browser handles echo cancellation and jitter and this example needs no audio code beyond `getUserMedia`. Speak, and the same panes fill in.
+**Live mic** opens a real WebRTC session. The microphone is published as a media track rather than pushed through `sendAudio`, so the browser handles echo cancellation and jitter and this example needs no audio code beyond `getUserMedia`. Speak, and the same panes fill in. With both an OpenAI key and a GitHub token on the server there is a real conversation to have against a real repository, so the page opens on this mode instead of scripted — until you pick for yourself, after which it stays where you put it.
 
 The script refers to a PR by the words the speaker used, never by an id, so one recording runs against either host: whatever `resolve_reference` returns is filled into `attach_context` before the call goes out. The lookup stays silent while the activity pane shows what the host resolved.
 
@@ -46,6 +46,8 @@ The script refers to a PR by the words the speaker used, never by an id, so one 
 | **What was said** | The utterance ledger. The only thing the prompt body may draw from. |
 | **The prompt** | The draft. Each line is tinted by how it relates to what was said. |
 | **What Riff did** | Tool calls, and what the engine sent back — including rejections. |
+
+A session holds several unsent prompts, so a strip of them appears above the draft as soon as there is more than one. `live` is the one the next thing said lands in, `parked` is one set aside, `sent` is one that has gone. Which of them Riff writes into is decided by voice and nothing else — say the subject has changed and it opens a new one, say you want to go back and it switches. Clicking a prompt here only chooses which one is on screen, so a parked one can be read without becoming the one being spoken into.
 
 Hover a draft line to highlight the utterances it came from, and hover an utterance to see which lines drew on it. That link is the whole argument: the prompt is not a summary of the conversation, it is a selection from it.
 
@@ -61,7 +63,7 @@ Tool results are visible for the same reason. Riff's own event stream reports th
 npm run demo:verify
 ```
 
-Runs the same script through a real [`RiffSession`](../../packages/riff-core/src/session.ts) in Node and asserts the finished prompt still matches the one in the project README, byte for byte. This is the fast way to find out that a change to the agent bundle, the grounding config, or a render profile has quietly broken the demo.
+Runs the same script through a real [`RiffSession`](../../packages/riff-core/src/session.ts) in Node and asserts the finished prompt still matches the one in the project README, byte for byte — and that the prompt the speaker set aside is still open, holding its own line and none of the one that was sent. This is the fast way to find out that a change to the agent bundle, the grounding config, or a render profile has quietly broken the demo.
 
 ## Files
 

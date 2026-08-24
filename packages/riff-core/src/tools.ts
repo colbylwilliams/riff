@@ -10,9 +10,22 @@ import { isPlausibleMishearing, termKey } from "./lexicon.ts";
 import { validate } from "./schema.ts";
 import { tidyWhitespace } from "./text.ts";
 
-/** Passed to a handler so host calls can be abandoned when Riff stops waiting. */
-export interface ToolCallSignal {
+/**
+ * Passed to a handler so host calls can be abandoned when Riff stops waiting, and so a handler can
+ * report a result that has already come true.
+ */
+export interface ToolCall {
   signal?: AbortSignal;
+  /**
+   * Fixes the result of this call, whatever happens next.
+   *
+   * A call is bounded so a host that never answers cannot hold a turn open. Past the point where
+   * something outside Riff has changed — a prompt the destination has taken — there is nothing left
+   * to give up on, and reporting a timeout there would tell the model a prompt that went out did
+   * not, inviting it to send again. A handler commits at that moment; everything after it is
+   * bookkeeping that may be abandoned freely.
+   */
+  commit(result: unknown): void;
 }
 
 export interface ToolOutcome {
@@ -54,7 +67,7 @@ export interface ToolRegistry {
   dispatch(name: string, argumentsJson: string): Promise<ToolOutcome>;
 }
 
-type Handler = (args: any, runtime: ToolRuntime, call: ToolCallSignal) => Promise<unknown> | unknown;
+type Handler = (args: any, runtime: ToolRuntime, call: ToolCall) => Promise<unknown> | unknown;
 
 /**
  * Bounds a tool call. A host that never returns would otherwise hold the whole batch open, and the
@@ -63,26 +76,44 @@ type Handler = (args: any, runtime: ToolRuntime, call: ToolCallSignal) => Promis
  *
  * The controller is aborted when the timeout fires, so a host that honors it stops work rather than
  * completing a submission the model has already been told failed.
+ *
+ * A committed result outranks both the timeout and any later failure: it says the world has already
+ * changed, which no amount of giving up afterwards can undo.
  */
-function withToolTimeout<T>(
-  start: (call: ToolCallSignal) => Promise<T>,
+function withToolTimeout(
+  start: (call: ToolCall) => Promise<unknown>,
   timeoutMs: number,
   name: string,
-): Promise<T> {
-  if (!(timeoutMs > 0)) return start({});
-
+): Promise<unknown> {
+  let committed: { result: unknown } | undefined;
   const controller = new AbortController();
-  const work = start({ signal: controller.signal });
+  const call: ToolCall = {
+    signal: controller.signal,
+    commit: (result) => {
+      committed = { result };
+    },
+  };
 
-  return new Promise<T>((resolve, reject) => {
+  const work = start(call);
+  if (!(timeoutMs > 0)) return work;
+
+  return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       controller.abort();
-      reject(new Error(`${name} did not answer within ${timeoutMs}ms; tell them it is not responding`));
+      if (committed) resolve(committed.result);
+      else reject(new Error(`${name} did not answer within ${timeoutMs}ms; tell them it is not responding`));
     }, timeoutMs);
     timer.unref?.();
     work.then(
-      (value) => { clearTimeout(timer); resolve(value); },
-      (error) => { clearTimeout(timer); reject(error); },
+      (result) => {
+        clearTimeout(timer);
+        resolve(result);
+      },
+      (error) => {
+        clearTimeout(timer);
+        if (committed) resolve(committed.result);
+        else reject(error);
+      },
     );
   });
 }
@@ -530,63 +561,61 @@ const HANDLERS: Record<string, Handler> = {
     }
 
     if (args.target) take.target = args.target;
-    take.status = "ready";
 
-    const artifact = buildArtifact(take, {
-      config: runtime.bundle.render,
-      ...(runtime.renderProfile ? { profile: runtime.renderProfile } : {}),
-      lexicon: runtime.lexicon,
-      utteranceCount: runtime.ledger.size,
-      now: runtime.now(),
-      ...(runtime.provenance ? { provenance: runtime.provenance() } : {}),
+    // The take stays where the speaker left it across the await, and only the artifact the host
+    // receives is marked ready. Moving the take first would strand it in `ready` when this handler
+    // is abandoned at its deadline, and any rollback afterwards has to guess what to put back —
+    // which is how a parked take gets resurrected as drafting by a send that never happened.
+    const artifact: PromptArtifact = {
+      ...buildArtifact(take, {
+        config: runtime.bundle.render,
+        ...(runtime.renderProfile ? { profile: runtime.renderProfile } : {}),
+        lexicon: runtime.lexicon,
+        utteranceCount: runtime.ledger.size,
+        now: runtime.now(),
+        ...(runtime.provenance ? { provenance: runtime.provenance() } : {}),
+      }),
+      status: "ready",
+    };
+
+    // No rollback on failure: the take was never moved, so it is already exactly as they left it.
+    const result = await runtime.host.submitPrompt(artifact, {
+      ...(args.target ? { target: args.target } : {}),
+      ...(args.keep_open ? { keepOpen: args.keep_open } : {}),
+      ...(call.signal ? { signal: call.signal } : {}),
     });
 
-    let result: Awaited<ReturnType<typeof runtime.host.submitPrompt>>;
-    try {
-      result = await runtime.host.submitPrompt(artifact, {
-        ...(args.target ? { target: args.target } : {}),
-        ...(args.keep_open ? { keepOpen: args.keep_open } : {}),
-        ...(call.signal ? { signal: call.signal } : {}),
-      });
-    } catch (error) {
-      // The registry turns this into a tool error, so the status has to be put back here or the
-      // take stays `ready` for a submission that never happened.
-      take.status = "drafting";
-      throw error;
-    }
-
-    let storeWarning: string | undefined;
-
-    if (result.submitted) {
-      take.status = args.keep_open ? "drafting" : "submitted";
-      const stored: PromptArtifact = { ...artifact, status: take.status, submittedAt: runtime.now() };
-
-      // The destination already has the prompt. Reporting a failed save as a failed submission
-      // would invite a retry that sends it twice, so the send is reported as what it is.
-      try {
-        await runtime.store.saveArtifact(stored);
-      } catch (error) {
-        storeWarning = `it was sent, but saving a copy failed: ${(error as Error).message}`;
-      }
-
-      runtime.onSubmitted?.(stored);
-      if (!args.keep_open) {
-        // Without this the submitted take stays active and the next line spoken lands inside a
-        // prompt that has already been sent.
-        runtime.book.clearActive();
-        runtime.onTakeChanged?.(null);
-      }
-    } else {
-      take.status = "drafting";
-    }
-
-    return {
+    const report = (warning?: string) => ({
       submitted: result.submitted,
       prompt_id: result.promptId ?? artifact.id,
       destination: result.destination,
       url: result.url,
       ...(result.message ? { message: result.message } : {}),
-      ...(storeWarning ? { warning: storeWarning } : {}),
-    };
+      ...(warning ? { warning } : {}),
+    });
+
+    // A refusal needs no rollback either: the take was never moved out of where they left it, and
+    // nothing outside Riff changed, so there is nothing to commit.
+    if (!result.submitted) return report();
+
+    // The destination has the prompt. Everything that records that fact happens before the store is
+    // awaited, and the answer is committed, so a save that never returns can neither strand the
+    // take nor turn a delivered prompt into a timeout the model would act on by sending it twice.
+    const stoodDown = runtime.book.markSubmitted(take.id, args.keep_open === true);
+    const stored: PromptArtifact = { ...artifact, status: take.status, submittedAt: runtime.now() };
+
+    runtime.onSubmitted?.(stored);
+    if (stoodDown) runtime.onTakeChanged?.(null);
+    call.commit(report());
+
+    // Reporting a failed save as a failed submission would invite a retry that sends it twice, so
+    // the send is reported as what it is.
+    try {
+      await runtime.store.saveArtifact(stored);
+    } catch (error) {
+      return report(`it was sent, but saving a copy failed: ${(error as Error).message}`);
+    }
+
+    return report();
   },
 };

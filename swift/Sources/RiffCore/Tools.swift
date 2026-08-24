@@ -19,6 +19,27 @@ func jsonString(_ value: String?) -> JSONValue? { value.map { .string($0) } }
 func jsonNumber(_ value: Double?) -> JSONValue? { value.map { .number($0) } }
 func jsonInt(_ value: Int?) -> JSONValue? { value.map { .number(Double($0)) } }
 
+/// One tool call's own state, which is where a committed result has to live.
+///
+/// A call is bounded so a host that never answers cannot hold a turn open. Past the point where
+/// something outside Riff has changed — a prompt the destination has taken — there is nothing left
+/// to give up on, and reporting a timeout there would tell the model a prompt that went out did not,
+/// inviting it to send again. A handler commits at that moment; everything after it is bookkeeping
+/// that may be abandoned freely.
+///
+/// Scoped to the call rather than held on the registry because `withDeadline` abandons work instead
+/// of stopping it: a handler that has already timed out can still be running when the next call
+/// starts, and anything it writes must land somewhere only its own call can read. Riff's other
+/// bindings hold this the same way, for the same reason.
+@MainActor
+final class ToolCall {
+    private(set) var committed: JSONValue?
+
+    func commit(_ result: JSONValue) {
+        committed = result
+    }
+}
+
 /// Everything a tool call needs to read and change. Confined to the main actor because the draft is
 /// what a user interface renders, and there is exactly one conversation in flight at a time.
 @MainActor
@@ -114,16 +135,26 @@ public final class ToolRegistry {
     // MARK: - Handlers
 
     /// Bounds a tool call. A timeout is a result the model can act on; silence is not.
+    ///
+    /// A committed result outranks both the timeout and any later failure: it says the world has
+    /// already changed, which no amount of giving up afterwards can undo. The box is created here,
+    /// so it belongs to this call and nothing an abandoned earlier call does can reach it.
     private func run(name: String, args: JSONValue, timeoutMs: Int) async throws -> JSONValue {
-        try await withDeadline(
-            milliseconds: timeoutMs,
-            onTimeout: { RiffError.tool("\(name) did not answer within \(timeoutMs)ms; tell them it is not responding") }
-        ) { [self] in
-            try await run(name: name, args: args)
+        let call = ToolCall()
+        do {
+            return try await withDeadline(
+                milliseconds: timeoutMs,
+                onTimeout: { RiffError.tool("\(name) did not answer within \(timeoutMs)ms; tell them it is not responding") }
+            ) { [self] in
+                try await run(name: name, args: args, call: call)
+            }
+        } catch {
+            guard let committed = call.committed else { throw error }
+            return committed
         }
     }
 
-    private func run(name: String, args: JSONValue) async throws -> JSONValue {
+    private func run(name: String, args: JSONValue, call: ToolCall) async throws -> JSONValue {
         switch name {
         case "draft_update": return try draftUpdate(args)
         case "read_draft": return try readDraft(args)
@@ -133,7 +164,7 @@ public final class ToolRegistry {
         case "recall_prompts": return try await recallPrompts(args)
         case "motifs": return try await motifs(args)
         case "takes": return try takes(args)
-        case "submit_prompt": return try await submitPrompt(args)
+        case "submit_prompt": return try await submitPrompt(args, call: call)
         default: throw RiffError.unknownTool(name)
         }
     }
@@ -554,7 +585,7 @@ public final class ToolRegistry {
         }
     }
 
-    private func submitPrompt(_ args: JSONValue) async throws -> JSONValue {
+    private func submitPrompt(_ args: JSONValue, call: ToolCall) async throws -> JSONValue {
         let take = try openTake(from: args)
         let policy = runtime.bundle.policy
 
@@ -572,62 +603,64 @@ public final class ToolRegistry {
         let target = args["target"]?.stringValue
         let keepOpen = args["keep_open"]?.boolValue == true
         if let target { take.target = target }
-        take.status = .ready
 
-        let artifact = try buildArtifact(take, options: BuildArtifactOptions(
+        // The take stays where the speaker left it across the await, and only the artifact the host
+        // receives is marked ready. Moving the take first would strand it in `.ready` when this
+        // handler is abandoned at its deadline, and any rollback afterwards has to guess what to put
+        // back — which is how a parked take gets resurrected as drafting by a send that never
+        // happened.
+        var artifact = try buildArtifact(take, options: BuildArtifactOptions(
             render: RenderOptions(config: runtime.bundle.render, profile: runtime.renderProfile),
             lexicon: runtime.lexicon,
             utteranceCount: runtime.ledger.count,
             now: runtime.now(),
             provenance: runtime.provenance?()
         ))
+        artifact.status = .ready
 
-        let result: SubmitResult
+        // No rollback on failure: the take was never moved, so it is already as they left it.
+        let result = try await runtime.host.submitPrompt(
+            artifact,
+            options: SubmitOptions(target: target, keepOpen: keepOpen)
+        )
+
+        func report(_ warning: String? = nil) -> JSONValue {
+            json([
+                ("submitted", .bool(result.submitted)),
+                ("prompt_id", .string(result.promptId ?? artifact.id)),
+                ("destination", jsonString(result.destination)),
+                ("url", jsonString(result.url)),
+                ("message", jsonString(result.message)),
+                ("warning", jsonString(warning)),
+            ])
+        }
+
+        // A refusal needs no rollback either: the take was never moved out of where they left it,
+        // and nothing outside Riff changed, so there is nothing to commit.
+        guard result.submitted else { return report() }
+
+        // The destination has the prompt. Everything that records that fact happens before the
+        // store is awaited, and the answer is committed, so a save that never returns can neither
+        // strand the take nor turn a delivered prompt into a timeout the model would act on by
+        // sending it twice.
+        let stoodDown = runtime.book.markSubmitted(take.id, keepOpen: keepOpen)
+        var stored = artifact
+        stored.status = take.status
+        stored.submittedAt = runtime.now()
+
+        runtime.onSubmitted?(stored)
+        if stoodDown { runtime.onTakeChanged?(nil) }
+        call.commit(report())
+
+        // Reporting a failed save as a failed submission would invite a retry that sends it twice,
+        // so the send is reported as what it is.
         do {
-            result = try await runtime.host.submitPrompt(
-                artifact,
-                options: SubmitOptions(target: target, keepOpen: keepOpen)
-            )
+            try await runtime.store.saveArtifact(stored)
         } catch {
-            // The registry turns this into a tool error, so the status has to be put back here or
-            // the take stays `.ready` for a submission that never happened.
-            take.status = .drafting
-            throw error
+            return report("it was sent, but saving a copy failed: \(error)")
         }
 
-        var storeWarning: String?
-
-        if result.submitted {
-            take.status = keepOpen ? .drafting : .submitted
-            var stored = artifact
-            stored.status = take.status
-            stored.submittedAt = runtime.now()
-
-            // The destination already has the prompt. Reporting a failed save as a failed
-            // submission would invite a retry that sends it twice.
-            do {
-                try await runtime.store.saveArtifact(stored)
-            } catch {
-                storeWarning = "it was sent, but saving a copy failed: \(error)"
-            }
-
-            runtime.onSubmitted?(stored)
-            if !keepOpen {
-                runtime.book.clearActive()
-                runtime.onTakeChanged?(nil)
-            }
-        } else {
-            take.status = .drafting
-        }
-
-        return json([
-            ("submitted", .bool(result.submitted)),
-            ("prompt_id", .string(result.promptId ?? artifact.id)),
-            ("destination", jsonString(result.destination)),
-            ("url", jsonString(result.url)),
-            ("message", jsonString(result.message)),
-            ("warning", jsonString(storeWarning)),
-        ])
+        return report()
     }
 }
 

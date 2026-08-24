@@ -8,12 +8,14 @@ import { observeProvider } from "./observe-provider.js";
 
 const ui = {
   statePill: document.getElementById("state-pill"),
-  takeLabel: document.getElementById("take-label"),
   ring: document.getElementById("ring-value"),
   fidelityNumber: document.getElementById("fidelity-number"),
   ledger: document.getElementById("ledger"),
   utteranceCount: document.getElementById("utterance-count"),
   pending: document.getElementById("pending"),
+  takes: document.getElementById("takes"),
+  takesHint: document.getElementById("takes-hint"),
+  promptView: document.getElementById("prompt-view"),
   draft: document.getElementById("draft"),
   markdown: document.getElementById("markdown"),
   toggleMarkdown: document.getElementById("toggle-markdown"),
@@ -79,6 +81,28 @@ let lastSubmission = null;
 let agentEntry = null;
 let liveAvailable = false;
 let githubAvailable = false;
+/**
+ * The session whose prompts are on screen.
+ *
+ * Held past the end of a run, unlike `run`. A closed session still knows everything it drafted, and
+ * dropping it on stop would empty the pane the moment someone clicked one of the prompts to read it.
+ */
+let shown = null;
+/**
+ * Which take the prompt pane is showing, and whether the viewer chose it.
+ *
+ * A session holds several unsent prompts, so "the draft" is a choice. By default the pane follows
+ * whichever one Riff is writing into. Opening one to read pins it, so a draft update landing in
+ * another prompt does not yank the pane away mid-read — but an explicit change of take, which is the
+ * speaker saying which prompt they are on, takes the pane with it and releases the pin.
+ *
+ * Deciding which take is being written into is Riff's job, from what it hears. This is only about
+ * what is on screen.
+ */
+let viewingTakeId = null;
+let pinnedTakeId = null;
+/** Set once someone picks a mode, so a later key change does not move the selection under them. */
+let modeChosen = false;
 /** The id the host gave the last thing it resolved, so the script can attach what was found. */
 let lastReferenceId = null;
 
@@ -118,6 +142,7 @@ async function start() {
 
   started.id = id;
   run = started;
+  shown = started.session;
   started.session.on((event) => {
     if (id === runSequence) handleEvent(event);
   });
@@ -279,12 +304,21 @@ function handleEvent(event) {
       break;
 
     case "draft":
-      setFidelity(event.fidelity);
-      renderDraft(run?.session.artifact());
+      // Creating a take can evict the oldest empty one, so what is on screen is checked before it
+      // is used. A draft update is Riff writing, not the speaker changing prompt, so it never takes
+      // the pane away from one being read.
+      reconcileViewing();
+      followTake(event.takeId);
       break;
 
     case "take":
-      ui.takeLabel.textContent = event.takeId ? `take ${event.takeId}` : "";
+      reconcileViewing();
+      // An explicit change of take is the speaker saying which prompt they are on, so the pane goes
+      // with it. A null take means nothing is active and the next thing said starts a fresh one —
+      // which happens right after a send, when the prompt that just went out is still worth looking
+      // at, so what is on screen stays until there is something newer to follow.
+      if (event.takeId) showTake(event.takeId, { pinned: false });
+      else renderTakes();
       break;
 
     case "agent.transcript":
@@ -308,8 +342,9 @@ function handleEvent(event) {
 
     case "submitted":
       lastArtifact = event.artifact;
-      renderDraft(event.artifact);
-      setFidelity(event.artifact.provenance.fidelity);
+      // Unpinned, so the pane shows what was just sent and then moves on by itself as soon as Riff
+      // starts writing the next prompt.
+      showTake(event.artifact.takeId, { pinned: false });
       showSent();
       break;
 
@@ -424,25 +459,190 @@ function addUtterance(utterance) {
   item.scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
 
+/**
+ * The open prompts, and which of them is on screen.
+ *
+ * Hidden until there is more than one: a single draft needs no chooser, and the strip appearing is
+ * itself the signal that a second prompt was started.
+ *
+ * A real tab set, not the look of one: exactly one tab is tabbable and the arrow keys move between
+ * them, because `role="tablist"` is a promise about how the thing behaves and assistive technology
+ * has no way to find out it was only decorative.
+ *
+ * Tabs are updated in place rather than rebuilt. Riff drafts continuously while someone talks, so
+ * replacing the children here would destroy the focused tab several times a sentence and drop the
+ * keyboard out of the widget mid-navigation.
+ */
+function renderTakes() {
+  const takes = shown?.takes() ?? [];
+  const activeId = shown?.book.activeId ?? null;
+
+  ui.takes.hidden = takes.length < 2;
+  ui.takesHint.hidden = ui.takes.hidden;
+
+  if (ui.takes.hidden) {
+    // With no tablist there is no tab to name the panel, and a `tabpanel` without one is an orphan
+    // that assistive technology announces as part of a widget the page is not showing. The
+    // semantics arrive with the tabs and leave with them.
+    ui.takes.replaceChildren();
+    ui.promptView.removeAttribute("role");
+    ui.promptView.removeAttribute("tabindex");
+    ui.promptView.removeAttribute("aria-labelledby");
+    return;
+  }
+
+  ui.promptView.setAttribute("role", "tabpanel");
+  // The panel holds focusable lines once there are any, but it is empty until then, so it stays
+  // reachable on its own.
+  ui.promptView.tabIndex = 0;
+
+  const stale = new Map([...ui.takes.children].map((tab) => [tab.dataset.takeId, tab]));
+  // A take can be dropped from the book while its tab has focus, which is the one case reconciling
+  // cannot preserve on its own.
+  const focusedTakeId = ui.takes.contains(document.activeElement)
+    ? document.activeElement.dataset.takeId
+    : null;
+
+  takes.forEach((take, index) => {
+    const status = takeStatus(take, activeId);
+    const selected = take.id === viewingTakeId;
+    const tab = stale.get(take.id) ?? createTakeTab(take.id);
+    stale.delete(take.id);
+
+    tab.dataset.status = status;
+    tab.setAttribute("aria-selected", String(selected));
+    // Roving tabindex: Tab reaches the strip once, then the arrow keys move within it.
+    tab.tabIndex = selected ? 0 : -1;
+    tab.title = TAKE_STATUS_TITLES[status];
+    // The label follows the draft: an unlabelled take is known by its title once it has one.
+    tab.replaceChildren(span(take.label ?? take.title?.text ?? take.id), span(status, "take-status"));
+
+    if (ui.takes.children[index] !== tab) ui.takes.insertBefore(tab, ui.takes.children[index] ?? null);
+    if (selected) ui.promptView.setAttribute("aria-labelledby", tab.id);
+  });
+
+  for (const tab of stale.values()) tab.remove();
+
+  if (focusedTakeId && !ui.takes.contains(document.activeElement)) {
+    const selected = ui.takes.querySelector('[aria-selected="true"]');
+    (ui.takes.querySelector(`[data-take-id="${focusedTakeId}"]`) ?? selected)?.focus();
+  }
+}
+
+/**
+ * Moves off a take the book no longer has.
+ *
+ * `DraftBook.create` drops the oldest empty take when the session is at its limit, and that can be
+ * the one on screen. Left alone the pane would keep showing a prompt that no longer exists, no tab
+ * would be selected, and the panel would name a tab that had been removed.
+ */
+function reconcileViewing() {
+  const takes = shown?.takes() ?? [];
+  if (takes.length === 0) {
+    viewingTakeId = null;
+    pinnedTakeId = null;
+    return;
+  }
+
+  if (pinnedTakeId !== null && !takes.some((take) => take.id === pinnedTakeId)) pinnedTakeId = null;
+  if (viewingTakeId !== null && !takes.some((take) => take.id === viewingTakeId)) {
+    const fallback = shown?.book.activeId ?? takes[takes.length - 1].id;
+    showTake(fallback, { pinned: false });
+  }
+}
+
+function createTakeTab(takeId) {
+  const tab = document.createElement("button");
+  tab.type = "button";
+  tab.className = "take";
+  tab.id = `take-tab-${takeId}`;
+  tab.dataset.takeId = takeId;
+  tab.setAttribute("role", "tab");
+  tab.setAttribute("aria-controls", ui.promptView.id);
+  tab.addEventListener("click", () => showTake(takeId, { pinned: true }));
+  tab.addEventListener("keydown", moveBetweenTakes);
+  return tab;
+}
+
+/**
+ * What each status means for what can still be done with the prompt.
+ *
+ * A submitted or discarded take is refused by `DraftBook.switchTo`, so saying Riff will come back to
+ * one would be the page promising something the engine declines to do.
+ */
+const TAKE_STATUS_TITLES = {
+  live: "The prompt the next thing said lands in",
+  parked: "Set aside. Say so and Riff comes back to it",
+  sent: "Already sent. It cannot be reopened, only read",
+  dropped: "Thrown away. It cannot be reopened, only read",
+};
+
+/** Arrow, Home, and End across the strip — the half of `role="tablist"` that is behavior. */
+function moveBetweenTakes(event) {
+  const tabs = [...ui.takes.children];
+  const current = tabs.indexOf(event.currentTarget);
+  const last = tabs.length - 1;
+
+  let next;
+  if (event.key === "ArrowRight" || event.key === "ArrowDown") next = current === last ? 0 : current + 1;
+  else if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = current === 0 ? last : current - 1;
+  else if (event.key === "Home") next = 0;
+  else if (event.key === "End") next = last;
+  else return;
+
+  event.preventDefault();
+  // Selection follows focus, which is the expected behavior when showing a tab is this cheap.
+  showTake(tabs[next].dataset.takeId, { pinned: true });
+  ui.takes.querySelector('[aria-selected="true"]')?.focus();
+}
+
+/** Engine status in the viewer's terms, with the active take called out as the one being written to. */
+function takeStatus(take, activeId) {
+  if (take.id === activeId) return "live";
+  if (take.status === "submitted") return "sent";
+  if (take.status === "discarded") return "dropped";
+  return "parked";
+}
+
+/**
+ * Puts one take on screen. Which take Riff is writing into is unaffected.
+ *
+ * `pinned` records that the viewer chose this prompt, so later drafts landing elsewhere leave it
+ * alone. Anything Riff drives passes `pinned: false`, which releases a previous choice.
+ */
+function showTake(takeId, { pinned }) {
+  viewingTakeId = takeId;
+  pinnedTakeId = pinned ? takeId : null;
+  const artifact = takeId ? (shown?.artifact(takeId) ?? null) : null;
+  renderDraft(artifact);
+  setFidelity(artifact?.provenance.fidelity ?? 0);
+  renderTakes();
+}
+
+/** A draft update: it moves the pane only when the viewer is not reading something else. */
+function followTake(takeId) {
+  if (pinnedTakeId !== null && pinnedTakeId !== takeId) renderTakes();
+  // A draft landing in the prompt being read is not a reason to stop reading it, so a pin on this
+  // take survives rather than being released by the update it was waiting for.
+  else showTake(takeId, { pinned: pinnedTakeId === takeId });
+}
+
 function renderDraft(artifact) {
-  if (artifact) lastArtifact = artifact;
-  const current = artifact ?? lastArtifact;
-
   ui.draft.replaceChildren();
-  ui.markdown.textContent = current?.rendered ?? "";
+  ui.markdown.textContent = artifact?.rendered ?? "";
 
-  if (!current || current.lines.length === 0) {
+  if (!artifact || artifact.lines.length === 0) {
     ui.draft.append(paragraph("Nothing captured yet.", "hint"));
     return;
   }
 
   const title = document.createElement("h3");
   title.className = "draft-title";
-  title.textContent = current.title.text;
+  title.textContent = artifact.title.text;
   ui.draft.append(title);
 
   for (const section of SECTIONS) {
-    const lines = current.lines.filter((line) => line.section === section);
+    const lines = artifact.lines.filter((line) => line.section === section);
     if (lines.length === 0) continue;
 
     const block = document.createElement("div");
@@ -458,10 +658,10 @@ function renderDraft(artifact) {
     ui.draft.append(block);
   }
 
-  if (current.context.length > 0) {
+  if (artifact.context.length > 0) {
     const context = document.createElement("div");
     context.className = "context";
-    for (const item of current.context) context.append(renderContext(item));
+    for (const item of artifact.context) context.append(renderContext(item));
     ui.draft.append(context);
   }
 }
@@ -637,6 +837,14 @@ function applyConfig(config) {
     ui.micLabel.textContent = defaultMicLabel();
   }
 
+  // With both credentials on the server there is a real conversation to have against a real
+  // repository, so that is what the demo opens on. Only until someone picks for themselves: moving
+  // the selection under them after that is worse than starting on the mode they did not want.
+  if (liveAvailable && githubAvailable && !modeChosen && !run) {
+    liveInput.checked = true;
+    ui.micLabel.textContent = defaultMicLabel();
+  }
+
   const repository = config.github?.repository;
   ui.hostPill.textContent = githubAvailable ? `host: ${repository}` : "host: demo";
   ui.hostPill.title = githubAvailable
@@ -753,11 +961,15 @@ function reset() {
   lastSubmission = null;
   lastReferenceId = null;
   agentEntry = null;
+  shown = null;
+  viewingTakeId = null;
+  pinnedTakeId = null;
   ui.ledger.replaceChildren();
   ui.activity.replaceChildren();
   ui.utteranceCount.textContent = "0";
   closeSheet(ui.sent);
   setFidelity(0);
+  renderTakes();
   renderDraft(null);
 }
 
@@ -849,7 +1061,20 @@ ui.typeForm.addEventListener("submit", (event) => {
 });
 
 for (const input of document.querySelectorAll('input[name="mode"]')) {
-  input.addEventListener("change", () => (ui.micLabel.textContent = defaultMicLabel()));
+  // `click` rather than `change`, because re-selecting the mode that is already checked is still
+  // someone choosing it and fires no `change` at all. It covers keyboard activation too, and
+  // setting `checked` from script fires neither — which is what keeps this an account of what the
+  // person did rather than of what the page did to itself.
+  input.addEventListener("click", () => {
+    modeChosen = true;
+    ui.micLabel.textContent = defaultMicLabel();
+  });
+  // Arrow keys move a radio group's selection in some browsers without a click, so the label still
+  // has to follow a plain selection change.
+  input.addEventListener("change", () => {
+    modeChosen = true;
+    ui.micLabel.textContent = defaultMicLabel();
+  });
 }
 
 // Live mode needs a key on the server, so say so up front rather than failing on the first click.
@@ -858,5 +1083,6 @@ const config = await fetch("/api/riff/config")
   .catch(() => ({ live: false }));
 
 applyConfig(config);
+renderTakes();
 renderDraft(null);
 setFidelity(0);
