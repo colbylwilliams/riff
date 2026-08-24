@@ -71,6 +71,18 @@ public final class ToolRegistry {
     private let runtime: ToolRuntime
     private let definitions: [String: ToolDefinition]
 
+    /// A result that is already true, whatever happens to the rest of the handler.
+    ///
+    /// A call is bounded so a host that never answers cannot hold a turn open. Past the point where
+    /// something outside Riff has changed — a prompt the destination has taken — there is nothing
+    /// left to give up on, and reporting a timeout there would tell the model a prompt that went out
+    /// did not, inviting it to send again. A handler commits at that moment; everything after it is
+    /// bookkeeping that may be abandoned freely.
+    ///
+    /// One field is enough because this binding dispatches a turn's calls one at a time. The
+    /// TypeScript engine holds the same thing per call, because it dispatches a batch together.
+    private var committed: JSONValue?
+
     public init(runtime: ToolRuntime) {
         self.runtime = runtime
         self.definitions = Dictionary(uniqueKeysWithValues: runtime.bundle.tools.map { ($0.name, $0) })
@@ -114,12 +126,21 @@ public final class ToolRegistry {
     // MARK: - Handlers
 
     /// Bounds a tool call. A timeout is a result the model can act on; silence is not.
+    ///
+    /// A committed result outranks both the timeout and any later failure: it says the world has
+    /// already changed, which no amount of giving up afterwards can undo.
     private func run(name: String, args: JSONValue, timeoutMs: Int) async throws -> JSONValue {
-        try await withDeadline(
-            milliseconds: timeoutMs,
-            onTimeout: { RiffError.tool("\(name) did not answer within \(timeoutMs)ms; tell them it is not responding") }
-        ) { [self] in
-            try await run(name: name, args: args)
+        committed = nil
+        do {
+            return try await withDeadline(
+                milliseconds: timeoutMs,
+                onTimeout: { RiffError.tool("\(name) did not answer within \(timeoutMs)ms; tell them it is not responding") }
+            ) { [self] in
+                try await run(name: name, args: args)
+            }
+        } catch {
+            guard let committed else { throw error }
+            return committed
         }
     }
 
@@ -593,39 +614,43 @@ public final class ToolRegistry {
             options: SubmitOptions(target: target, keepOpen: keepOpen)
         )
 
-        var storeWarning: String?
-
-        if result.submitted {
-            // Everything that records the send happens before the store is awaited. A handler
-            // abandoned at its deadline part way through would otherwise leave a delivered take
-            // still active, and the next line spoken would be refused as an edit to a finished
-            // prompt while the model was told the send timed out.
-            let stoodDown = runtime.book.markSubmitted(take.id, keepOpen: keepOpen)
-            var stored = artifact
-            stored.status = take.status
-            stored.submittedAt = runtime.now()
-
-            runtime.onSubmitted?(stored)
-            if stoodDown { runtime.onTakeChanged?(nil) }
-
-            // The destination already has the prompt. Reporting a failed save as a failed
-            // submission would invite a retry that sends it twice.
-            do {
-                try await runtime.store.saveArtifact(stored)
-            } catch {
-                storeWarning = "it was sent, but saving a copy failed: \(error)"
-            }
+        func report(_ warning: String? = nil) -> JSONValue {
+            json([
+                ("submitted", .bool(result.submitted)),
+                ("prompt_id", .string(result.promptId ?? artifact.id)),
+                ("destination", jsonString(result.destination)),
+                ("url", jsonString(result.url)),
+                ("message", jsonString(result.message)),
+                ("warning", jsonString(warning)),
+            ])
         }
-        // A refusal needs no rollback either: the take was never moved out of where they left it.
 
-        return json([
-            ("submitted", .bool(result.submitted)),
-            ("prompt_id", .string(result.promptId ?? artifact.id)),
-            ("destination", jsonString(result.destination)),
-            ("url", jsonString(result.url)),
-            ("message", jsonString(result.message)),
-            ("warning", jsonString(storeWarning)),
-        ])
+        // A refusal needs no rollback either: the take was never moved out of where they left it,
+        // and nothing outside Riff changed, so there is nothing to commit.
+        guard result.submitted else { return report() }
+
+        // The destination has the prompt. Everything that records that fact happens before the
+        // store is awaited, and the answer is committed, so a save that never returns can neither
+        // strand the take nor turn a delivered prompt into a timeout the model would act on by
+        // sending it twice.
+        let stoodDown = runtime.book.markSubmitted(take.id, keepOpen: keepOpen)
+        var stored = artifact
+        stored.status = take.status
+        stored.submittedAt = runtime.now()
+
+        runtime.onSubmitted?(stored)
+        if stoodDown { runtime.onTakeChanged?(nil) }
+        committed = report()
+
+        // Reporting a failed save as a failed submission would invite a retry that sends it twice,
+        // so the send is reported as what it is.
+        do {
+            try await runtime.store.saveArtifact(stored)
+        } catch {
+            return report("it was sent, but saving a copy failed: \(error)")
+        }
+
+        return report()
     }
 }
 

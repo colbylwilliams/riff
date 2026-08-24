@@ -167,6 +167,7 @@ final class RecordingHost: RiffHost, @unchecked Sendable {
     private var stored: [ContextItem] = []
     private var received: [PromptArtifact] = []
     private var known: [String] = []
+    private var stalls = false
 
     /// Vocabulary this world knows about, which is what corroborates a spelling correction.
     var knownTerms: [String] {
@@ -184,6 +185,12 @@ final class RecordingHost: RiffHost, @unchecked Sendable {
         return received
     }
 
+    /// Makes `submitPrompt` never answer, so the deadline fires before anything has been delivered.
+    var stallsSubmit: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return stalls }
+        set { lock.lock(); stalls = newValue; lock.unlock() }
+    }
+
     func resolveReference(_ request: ResolveReferenceRequest) async throws -> [ContextItem] { candidates }
     func lookupTerm(_ request: LookupTermRequest) async throws -> [TermMatch] {
         knownTerms
@@ -193,6 +200,9 @@ final class RecordingHost: RiffHost, @unchecked Sendable {
     func recallPrompts(_ request: RecallPromptsRequest) async throws -> [PriorPrompt] { [] }
 
     func submitPrompt(_ artifact: PromptArtifact, options: SubmitOptions) async throws -> SubmitResult {
+        if stallsSubmit {
+            await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in }
+        }
         // NSLock cannot be taken from an async context, so the critical section stays synchronous.
         store(artifact)
         return SubmitResult(submitted: true, promptId: "p1", destination: "test", url: "https://example.test/p1")
@@ -233,6 +243,23 @@ func settle(_ rounds: Int = 8) async {
     for _ in 0..<rounds {
         await Task.yield()
         try? await Task.sleep(for: .milliseconds(2))
+    }
+}
+
+/// A store whose `saveArtifact` never returns, so the handler is abandoned at its deadline after the
+/// host has already taken the prompt.
+final class StallingStore: RiffStore, @unchecked Sendable {
+    func loadLexicon() async throws -> [LexiconTerm] { [] }
+    func saveTerm(_ term: LexiconTerm) async throws {}
+    func listMotifs() async throws -> [Motif] { [] }
+    func saveMotif(_ motif: Motif) async throws {}
+    func retireMotif(id: String, at: String) async throws {}
+    func listArtifacts(limit: Int) async throws -> [PromptArtifact] { [] }
+
+    func saveArtifact(_ artifact: PromptArtifact) async throws {
+        // Never returns, and ignores cancellation, which is the harsher case: the handler cannot
+        // finish however politely it is asked to.
+        await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in }
     }
 }
 
@@ -497,6 +524,93 @@ struct SessionTests {
         #expect(draft?["sections"]?["intent"]?.arrayValue?.count == 1)
         #expect(session.book.take(firstTake)?.status == .drafting)
         #expect(session.book.take(secondTake)?.status == .parked)
+    }
+
+    @Test("reports a delivered prompt even when saving a copy never returns")
+    func hungStoreDoesNotBecomeATimeout() async throws {
+        let provider = FakeProvider()
+        let host = RecordingHost()
+        let session = RiffSession(
+            bundle: try AgentBundle.bundled(),
+            provider: provider,
+            host: host,
+            store: StallingStore()
+        )
+        defer { withExtendedLifetime(session) {} }
+        try await session.start()
+        await settle()
+
+        provider.connection.say("the export button does nothing past a thousand rows")
+        await settle()
+        let drafted = provider.connection.callTool("draft_update", .object([
+            "operations": .array([
+                .object([
+                    "op": .string("upsert_line"),
+                    "section": .string("intent"),
+                    "text": .string("the export button does nothing past a thousand rows"),
+                ]),
+            ]),
+        ]))
+        _ = try await provider.connection.result(for: drafted)
+        let takeId = try #require(session.book.activeId)
+
+        let submitted = provider.connection.callTool("submit_prompt", .object([:]))
+        // Longer than the bundle's tool timeout, so the deadline fires on the save that never lands.
+        let result = try await provider.connection.result(for: submitted, timeout: .seconds(12))
+
+        // The prompt was delivered, so that is what the model is told — reporting a timeout here is
+        // what makes it send a second time.
+        #expect(result["submitted"]?.boolValue == true)
+        #expect(result["error"] == nil)
+        #expect(host.submitted.count == 1)
+
+        // Recorded already, without waiting for the save that will never land.
+        #expect(session.book.take(takeId)?.status == .submitted)
+        #expect(session.book.activeId == nil)
+
+        provider.connection.say("also the avatars flicker on every scroll")
+        await settle()
+        let again = provider.connection.callTool("draft_update", .object([
+            "operations": .array([
+                .object([
+                    "op": .string("upsert_line"),
+                    "section": .string("intent"),
+                    "text": .string("the avatars flicker on every scroll"),
+                ]),
+            ]),
+        ]))
+        let draft = try await provider.connection.result(for: again)["draft"]
+        #expect(draft?["take_id"]?.stringValue != takeId, "the next line lands in a new prompt")
+    }
+
+    @Test("still reports a send that a host never confirms as a timeout")
+    func unconfirmedSendIsATimeout() async throws {
+        // The other half of the same rule: nothing outside Riff changed, so there is nothing
+        // committed and giving up is the honest answer.
+        let (session, provider, host, _) = try await makeSession()
+        defer { withExtendedLifetime(session) {} }
+        host.stallsSubmit = true
+
+        provider.connection.say("the export button does nothing past a thousand rows")
+        await settle()
+        let drafted = provider.connection.callTool("draft_update", .object([
+            "operations": .array([
+                .object([
+                    "op": .string("upsert_line"),
+                    "section": .string("intent"),
+                    "text": .string("the export button does nothing past a thousand rows"),
+                ]),
+            ]),
+        ]))
+        _ = try await provider.connection.result(for: drafted)
+        let takeId = try #require(session.book.activeId)
+
+        let submitted = provider.connection.callTool("submit_prompt", .object([:]))
+        let result = try await provider.connection.result(for: submitted, timeout: .seconds(12))
+
+        #expect(result["error"]?.stringValue?.contains("did not answer") == true)
+        #expect(session.book.take(takeId)?.status == .drafting, "an unsent take is left where it was")
+        #expect(session.book.activeId == takeId)
     }
 
     @Test("keeps the event stream alive across a restart")

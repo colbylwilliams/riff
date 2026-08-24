@@ -603,8 +603,15 @@ describe("RiffSession", () => {
     await settle();
     const takeId = session.book.activeId!;
 
-    provider.callTool("submit_prompt", {});
-    await settle();
+    const callId = provider.callTool("submit_prompt", {});
+    // Long enough for the deadline to fire on the save that never lands.
+    await new Promise((resolve) => setTimeout(resolve, bundle.session.limits.toolTimeoutMs + 200));
+
+    // The prompt was delivered, so that is what the model is told — reporting a timeout here is what
+    // makes it send a second time.
+    const result = provider.resultFor(callId);
+    assert.equal(result.submitted, true, "a delivered prompt is never reported as a timeout");
+    assert.ok(!result.error, `expected the committed result, got: ${result.error}`);
 
     // Recorded already, without waiting for the save that will never land.
     assert.equal(session.book.get(takeId)?.status, "submitted");
@@ -621,9 +628,32 @@ describe("RiffSession", () => {
     });
     await settle();
 
-    const result = provider.resultFor(drafted);
-    assert.ok(!result.error, `the next line should still be draftable, got: ${result.error}`);
-    assert.notEqual(result.draft.take_id, takeId, "and it lands in a new prompt, not the sent one");
+    const next = provider.resultFor(drafted);
+    assert.ok(!next.error, `the next line should still be draftable, got: ${next.error}`);
+    assert.notEqual(next.draft.take_id, takeId, "and it lands in a new prompt, not the sent one");
+  });
+
+  it("still reports a send that a host never confirms as a timeout", async () => {
+    // The other half of the same rule: nothing outside Riff changed, so there is nothing committed
+    // and giving up is the honest answer.
+    host.submitPrompt = () => new Promise(() => {});
+
+    provider.say("the export button does nothing past a thousand rows");
+    await settle();
+    provider.callTool("draft_update", {
+      operations: [
+        { op: "upsert_line", section: "intent", text: "the export button does nothing past a thousand rows" },
+      ],
+    });
+    await settle();
+    const takeId = session.book.activeId!;
+
+    const callId = provider.callTool("submit_prompt", {});
+    await new Promise((resolve) => setTimeout(resolve, bundle.session.limits.toolTimeoutMs + 200));
+
+    assert.match(provider.resultFor(callId).error, /did not answer/);
+    assert.equal(session.book.get(takeId)?.status, "drafting", "an unsent take is left where it was");
+    assert.equal(session.book.activeId, takeId);
   });
 
   it("gives the model a timeout rather than hanging when a host never answers", async () => {

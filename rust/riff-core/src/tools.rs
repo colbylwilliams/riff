@@ -259,13 +259,22 @@ impl ToolRuntime {
                 duration_ms,
                 effects,
             },
-            Some(Err(error)) => ToolOutcome {
-                effects,
-                ..ToolOutcome::error(error.to_string(), duration_ms)
+            // A handler that committed a result reports it, whether it then ran out of time or
+            // failed outright. Committing says the world has already changed, which no amount of
+            // giving up afterwards can undo, and saying otherwise would tell the model a prompt the
+            // destination has already taken did not go.
+            Some(Err(error)) => match committed {
+                Some(result) => ToolOutcome {
+                    ok: true,
+                    result,
+                    duration_ms,
+                    effects,
+                },
+                None => ToolOutcome {
+                    effects,
+                    ..ToolOutcome::error(error.to_string(), duration_ms)
+                },
             },
-            // A handler that committed a result before running out of time reports it. Saying the
-            // tool never answered would tell the model a prompt the destination has already taken
-            // did not go.
             None => match committed {
                 Some(result) => ToolOutcome {
                     ok: true,
