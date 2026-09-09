@@ -1,5 +1,17 @@
 # Architecture
 
+Riff sits between the application where someone speaks, the services that provide speech and context, and the agent that ultimately does the work.
+
+```mermaid
+flowchart LR
+    app["Your app"] <--> riff["Riff"]
+    riff <--> speech["Speech provider"]
+    riff <--> host["Your context"]
+    riff --> downstream["Agent that does the work"]
+```
+
+Your app owns the microphone and interface. Riff listens, clarifies, grounds, and drafts; the finished prompt goes to the downstream agent only when the speaker says to send it. See [getting-started.md](getting-started.md) for session wiring in each binding.
+
 ## Layers
 
 ```
@@ -32,9 +44,12 @@ everywhere:
 | `Lexicon` | Vocabulary transcription mangles, and the corrections. Feeds biasing and matching. |
 | `GroundingChecker` | Decides whether a proposed line is made of the speaker's words. |
 | `Take` / `DraftBook` | Drafts in progress, their ordering, supersession, and attached context. |
+| Motifs | Reusable instructions in the speaker's own words, with their original provenance. |
 | `ToolRegistry` | Validates arguments, runs local tools, delegates host tools. |
 | Renderer | Turns a take into the exact bytes the downstream agent receives. |
 | `RiffSession` | Owns the lifecycle, the state machine, and turn handling. |
+
+The output is a [prompt artifact](prompt-artifact.md), specified by [`prompt-artifact.schema.json`](../core/schema/prompt-artifact.schema.json).
 
 ## The shared agent definition
 
@@ -170,3 +185,29 @@ conversation.
 Sessions have a provider-imposed maximum duration. Riff emits `expiring` events at five minutes and
 one minute remaining so the application can warn or hand off, rather than having the connection
 vanish mid-sentence.
+
+## Repository layout
+
+```
+core/
+  agent/           the shared agent: instructions, tool contracts, session defaults, seed lexicon
+  schema/          JSON Schema for the manifest and the prompt artifact
+  conformance/     cases every binding must reproduce, as data
+  dist/            compiled agent bundle (generated, committed)
+packages/
+  riff-core/            engine: ledger, grounding, drafts, tools, session
+  riff-openai-realtime/ OpenAI Realtime provider (WebSocket and WebRTC)
+  riff-github/          GitHub-backed host: resolves PRs, issues, commits, people
+swift/
+  Sources/RiffCore/            the same engine, natively
+  Sources/RiffOpenAIRealtime/  the same provider, over URLSessionWebSocketTask
+  Sources/RiffAudio/           capture and playback, including the echo cancellation setup
+rust/
+  riff-core/               the same engine again, with no dependencies at all
+  riff-openai-realtime/    the same provider, over a socket the embedder supplies
+tools/
+  build-bundle.mjs   compiles core/agent into the bundle each binding ships
+examples/
+  riff-web/          a browser demo: microphone, live draft, grounding on screen, and a send
+docs/
+```
