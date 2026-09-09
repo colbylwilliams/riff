@@ -25,28 +25,55 @@ The tempting shortcut makes the deeper problem worse. Asking a model to "clean u
 
 ## What Riff does instead
 
-The useful part is staying with the idea instead of hunting through tabs for context. In an app connected to Slack, GitHub, and saved sessions, a riff might sound like this:
+This is the conversation the [runnable demo](examples/riff-web/README.md) plays. Its host supplies sample Slack, past-session, and GitHub results; the ledger, grounding check, and prompt below are real.
 
-> **You** — okay, I think the next thing is making drafts work offline. that Slack thread from Monday is why — people keep losing edits on the train.
+> **You** — okay, I think we should make drafts work offline. people keep losing edits on the train.
+>
+> **You** — the Slack thread from Monday has the examples
+>
+> **Riff** — *(finds the thread and attaches its link without interrupting)*
 >
 > **You** — didn't I already riff on this last week?
 >
 > **Riff** — The local-drafts session or the sync-retry one?
 >
-> **You** — the local-drafts one. use the PR I opened for it as the starting point. keep this local; don't add a backend. I should be able to close the app offline and come back to my edits. send it.
+> **You** — use the local-drafts session as background, and use the PR I just opened as the starting point. no sync engine yet.
+>
+> **You** — oh, separate thing, the onboarding doc still says node sixteen. different thing entirely.
+>
+> **Riff** — *(parks the offline-drafts prompt; opens a separate take for the doc)*
+>
+> **You** — let's finish the offline drafts one first
+>
+> **You** — and don't touch the generated files, you know how it is
+>
+> **You** — I should be able to close the app offline and come back to my edits. send it.
 
-While you stay with the idea, the host supplies:
+What gets submitted:
 
-| Source | What it contributes |
-|---|---|
-| **Slack** | The Monday discussion, resolved to a specific thread and permalink rather than leaving the next agent to guess which conversation you meant. |
-| **Past sessions** | Earlier prompts, their excerpts, and any host-recorded outcomes, so Riff can distinguish the local-drafts attempt from the sync-retry one without making you retell both. |
-| **GitHub** | The related PR, with its title, state, and URL, so "the PR I opened for it" points somewhere concrete. |
+```markdown
+# Make drafts work offline
 
-The prompt keeps your "I think," your constraint, and your definition of done. The Slack thread and PR travel in a separate **Context** block, not rewritten into your voice. Earlier prompts inform the clarification; their text is not silently copied into the new request. Riff does not propose the offline design or start building it — it gets your request and its references ready for the agent that does.
+I think we should make drafts work offline.
 
-> [!NOTE]
-> Sources come from the embedding app's [host bridge](docs/host-bridge.md), scoped to what the speaker can access. The shipped [`GitHubHost`](packages/riff-github/src/host.ts) resolves GitHub items and can recall saved prompts from an app-supplied store. Slack lookup and richer past-session history require integrations supplied by the app; they are not bundled with Riff.
+people keep losing edits on the train. the Slack thread from Monday has the examples. use the local-drafts session as background. use the PR I just opened as the starting point.
+
+**Constraints**
+- no sync engine yet
+- don't touch the generated files
+
+**Done when**
+- I should be able to close the app offline and come back to my edits
+
+**Context**
+- Slack #feedback "Drafts lost on the train" — https://example.com/slack/offline-drafts — referred to as "the Slack thread from Monday"
+- session-local-drafts "Local drafts" — https://example.com/sessions/local-drafts — referred to as "the local-drafts session"
+- acme/web#412 "Save drafts locally" (open) — https://github.com/acme/web/pull/412 — referred to as "the PR I just opened"
+```
+
+You never stopped to find the Slack link, reconstruct last week's two attempts, or fetch the PR. Riff kept "I think," asked only which earlier session you meant, and reattached your saved constraint verbatim. The onboarding tangent is still parked as its own prompt. Nothing from Slack or the recalled prompts is passed off as something you said.
+
+Run it with `npm run demo` after the setup below. The demo also shows an invented paraphrase being rejected before your words go into the draft. Scripted mode always uses sample data and sends nothing outside the demo; real sources come from your app's [host bridge](docs/host-bridge.md), not built-in Slack or session-history connectors.
 
 ## How "their words" is enforced
 
@@ -151,7 +178,7 @@ npm install && npm run build
 npm run demo                     # http://localhost:4173
 ```
 
-It replays a self-contained export-button scenario through the real engine — real ledger, real grounding check, real render — and shows the draft assembling itself line by line, including a paraphrase being rejected. The scripted demo uses canned context, not Slack or past-session integrations. Click **keys** in the page to paste an OpenAI key and talk to it yourself, or a GitHub token to have it resolve references against a real repository. See [the demo README](examples/riff-web/README.md).
+It replays the conversation above through the real engine and shows the draft assembling itself line by line, the source lookups, and the paraphrase being rejected. Click **keys** in the page to add an OpenAI key for live mic mode and, optionally, a GitHub token for real repository references in that mode. Scripted mode stays self-contained even when keys are configured. See [the demo README](examples/riff-web/README.md).
 
 ### TypeScript
 
