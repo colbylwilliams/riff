@@ -33,11 +33,33 @@ Sending is a **dry run** unless you tick *file a real issue*. The script ends by
 
 ## The two modes
 
-**Scripted** replays the conversation from the project [README](../../README.md) through [`scripted-provider.js`](public/scripted-provider.js), plus one beat the README leaves out: partway through, the speaker changes subject, and Riff opens a second prompt rather than folding the tangent into the first. It is not a mockup. Every line goes into the real utterance ledger, every tool call is dispatched by the real registry, and the prompt on screen is produced by the same engine a live model drives — the script only stands in for the model deciding what to call. Swapping it for [`OpenAIRealtimeProvider`](../../packages/riff-openai-realtime/src/provider.ts) changes who is talking and nothing else, which is the provider seam doing its job.
+**Scripted** replays an export-button bug report through [`scripted-provider.js`](public/scripted-provider.js). Partway through, the speaker changes subject, and Riff opens a second prompt rather than folding the tangent into the first. It is not a mockup. Every line goes into the real utterance ledger, every tool call is dispatched by the real registry, and the prompt on screen is produced by the same engine a live model drives — the script only stands in for the model deciding what to call. Swapping it for [`OpenAIRealtimeProvider`](../../packages/riff-openai-realtime/src/provider.ts) changes who is talking and nothing else, which is the provider seam doing its job.
 
 **Live mic** opens a real WebRTC session. The microphone is published as a media track rather than pushed through `sendAudio`, so the browser handles echo cancellation and jitter and this example needs no audio code beyond `getUserMedia`. Speak, and the same panes fill in. With both an OpenAI key and a GitHub token on the server there is a real conversation to have against a real repository, so the page opens on this mode instead of scripted — until you pick for yourself, after which it stays where you put it.
 
 The script refers to a PR by the words the speaker used, never by an id, so one recording runs against either host: whatever `resolve_reference` returns is filled into `attach_context` before the call goes out. The lookup stays silent while the activity pane shows what the host resolved.
+
+<details>
+<summary><strong>Scripted output with the demo host</strong></summary>
+
+What gets submitted:
+
+```markdown
+# Fix the export button
+
+the export button on the dashboard does nothing if you've got more than about a thousand rows. just spins. it's related to the PR I just opened.
+
+**Constraints**
+- don't touch the generated files
+
+**Done when**
+- I should be able to export like fifty thousand rows without it falling over
+
+**Context**
+- acme/web#412 "Chunked uploads" (open) — https://github.com/acme/web/pull/412 — referred to as "the PR I just opened"
+```
+
+</details>
 
 ## What you are looking at
 
@@ -63,7 +85,7 @@ Tool results are visible for the same reason. Riff's own event stream reports th
 npm run demo:verify
 ```
 
-Runs the same script through a real [`RiffSession`](../../packages/riff-core/src/session.ts) in Node and asserts the finished prompt still matches the one in the project README, byte for byte — and that the prompt the speaker set aside is still open, holding its own line and none of the one that was sent. This is the fast way to find out that a change to the agent bundle, the grounding config, or a render profile has quietly broken the demo.
+Runs the same script through a real [`RiffSession`](../../packages/riff-core/src/session.ts) in Node and asserts the finished prompt still matches the scripted output above, byte for byte — and that the prompt the speaker set aside is still open, holding its own line and none of the one that was sent. This is the fast way to find out that a change to the agent bundle, the grounding config, or a render profile has quietly broken the demo.
 
 ## Files
 
@@ -73,7 +95,7 @@ Runs the same script through a real [`RiffSession`](../../packages/riff-core/src
 | [`verify.mjs`](verify.mjs) | The same script, headless, as an assertion |
 | [`index.html`](public/index.html) | Layout and the import map |
 | [`app.js`](public/app.js) | Session wiring and rendering |
-| [`demo-script.js`](public/demo-script.js) | The README conversation, as data |
+| [`demo-script.js`](public/demo-script.js) | The export-button conversation, as data |
 | [`scripted-provider.js`](public/scripted-provider.js) | A `RealtimeProvider` that replays it |
 | [`demo-host.js`](public/demo-host.js) | A small fixed world: one PR, one motif, a destination that goes nowhere |
 | [`proxy-host.js`](public/proxy-host.js) | A `RiffHost` that answers from the server, so no token reaches the page |

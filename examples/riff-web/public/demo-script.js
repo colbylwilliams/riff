@@ -1,6 +1,6 @@
 /**
- * The conversation from the README, as data, with one beat the README leaves out: a subject change
- * partway through, which opens a second prompt and parks the first.
+ * An export-button bug report, as data, with a subject change partway through that opens a second
+ * prompt and parks the first.
  *
  * Nothing here is a mock of Riff. Every `user` line goes through the real ledger and every `tools`
  * step is dispatched by the real tool registry, so the draft on screen is produced by the same code

@@ -25,43 +25,28 @@ The tempting shortcut makes the deeper problem worse. Asking a model to "clean u
 
 ## What Riff does instead
 
-A short session, start to finish:
+The useful part is staying with the idea instead of hunting through tabs for context. In an app connected to Slack, GitHub, and saved sessions, a riff might sound like this:
 
-> **You** — okay so the export button on the dashboard, it does nothing if you've got more than
-> about a thousand rows. just spins.
+> **You** — okay, I think the next thing is making drafts work offline. that Slack thread from Monday is why — people keep losing edits on the train.
 >
-> **Riff** — *(silent; captures it, starts a draft)*
+> **You** — didn't I already riff on this last week?
 >
-> **You** — and it's related to the PR I just opened I think
+> **Riff** — The local-drafts session or the sync-retry one?
 >
-> **Riff** — *(silent; resolves and attaches it)*
->
-> **You** — yeah that one. um, and don't touch the generated files, you know how it is
->
-> **Riff** — *(recognizes a standing instruction it has heard before, attaches it)*
->
-> **You** — I should be able to export like fifty thousand rows without it falling over. send it.
+> **You** — the local-drafts one. use the PR I opened for it as the starting point. keep this local; don't add a backend. I should be able to close the app offline and come back to my edits. send it.
 
-What gets submitted:
+While you stay with the idea, the host supplies:
 
-```markdown
-# Fix the export button
+| Source | What it contributes |
+|---|---|
+| **Slack** | The Monday discussion, resolved to a specific thread and permalink rather than leaving the next agent to guess which conversation you meant. |
+| **Past sessions** | Earlier prompts, their excerpts, and any host-recorded outcomes, so Riff can distinguish the local-drafts attempt from the sync-retry one without making you retell both. |
+| **GitHub** | The related PR, with its title, state, and URL, so "the PR I opened for it" points somewhere concrete. |
 
-the export button on the dashboard does nothing if you've got more than about a thousand rows.
-just spins. it's related to the PR I just opened.
+The prompt keeps your "I think," your constraint, and your definition of done. The Slack thread and PR travel in a separate **Context** block, not rewritten into your voice. Earlier prompts inform the clarification; their text is not silently copied into the new request. Riff does not propose the offline design or start building it — it gets your request and its references ready for the agent that does.
 
-**Constraints**
-- don't touch the generated files
-
-**Done when**
-- I should be able to export like fifty thousand rows without it falling over
-
-**Context**
-- acme/web#412 "Chunked uploads" (open) — https://github.com/acme/web/pull/412 — referred to as
-  "the PR I just opened"
-```
-
-Riff removed filler without paraphrasing, kept the diagnostic "just spins," resolved the vague PR reference in context rather than rewriting the speaker, and reused the standing constraint verbatim.
+> [!NOTE]
+> Sources come from the embedding app's [host bridge](docs/host-bridge.md), scoped to what the speaker can access. The shipped [`GitHubHost`](packages/riff-github/src/host.ts) resolves GitHub items and can recall saved prompts from an app-supplied store. Slack lookup and richer past-session history require integrations supplied by the app; they are not bundled with Riff.
 
 ## How "their words" is enforced
 
@@ -166,7 +151,7 @@ npm install && npm run build
 npm run demo                     # http://localhost:4173
 ```
 
-It replays the conversation above through the real engine — real ledger, real grounding check, real render — and shows the draft assembling itself line by line, including a paraphrase being rejected. Click **keys** in the page to paste an OpenAI key and talk to it yourself, or a GitHub token to have it resolve references against a real repository. See [examples/riff-web](examples/riff-web).
+It replays a self-contained export-button scenario through the real engine — real ledger, real grounding check, real render — and shows the draft assembling itself line by line, including a paraphrase being rejected. The scripted demo uses canned context, not Slack or past-session integrations. Click **keys** in the page to paste an OpenAI key and talk to it yourself, or a GitHub token to have it resolve references against a real repository. See [the demo README](examples/riff-web/README.md).
 
 ### TypeScript
 

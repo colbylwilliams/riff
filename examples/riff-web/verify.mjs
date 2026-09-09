@@ -1,5 +1,5 @@
 /**
- * Runs the scripted demo headlessly and checks it still produces the README's prompt.
+ * Runs the scripted demo headlessly and checks it still produces the demo README's prompt.
  *
  * The page and this file drive the same script through the same engine, so this is the fast way to
  * find out that a change to the agent bundle, the grounding config, or the render profile has
@@ -100,19 +100,19 @@ assert.equal(
   "clean tool results should remain silent",
 );
 
-assert.equal(artifact.rendered, readmePrompt(), "the rendered prompt drifted from the README");
+assert.equal(artifact.rendered, readmePrompt(), "the rendered prompt drifted from the demo README");
 
 /**
- * The prompt the README promises, read from the README.
+ * The prompt the demo README promises, read from that README.
  *
  * Comparing against a copy pasted into this file would pass while the two drifted apart, which is
- * the one failure this check exists to catch. The block is hard-wrapped for reading, so continuation
- * lines are folded back into the single lines the renderer actually produces.
+ * the one failure this check exists to catch. Continuation lines are folded back into the single
+ * lines the renderer actually produces.
  */
 function readmePrompt() {
-  const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
+  const readme = readFileSync(new URL("./README.md", import.meta.url), "utf8");
   const block = /^What gets submitted:\s*```markdown\n([\s\S]*?)```/m.exec(readme);
-  assert.ok(block, "could not find the submitted-prompt block in the README");
+  assert.ok(block, "could not find the submitted-prompt block in the demo README");
 
   return block[1]
     .trim()
