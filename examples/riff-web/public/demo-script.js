@@ -1,6 +1,6 @@
 /**
- * The conversation from the README, as data, with one beat the README leaves out: a subject change
- * partway through, which opens a second prompt and parks the first.
+ * The main README's conversation, as data: a riff about offline drafts that draws on a Slack
+ * thread, earlier prompts, and a PR, with a tangent kept in its own take.
  *
  * Nothing here is a mock of Riff. Every `user` line goes through the real ledger and every `tools`
  * step is dispatched by the real tool registry, so the draft on screen is produced by the same code
@@ -9,6 +9,7 @@
  *
  * Steps:
  *   { user }   what the transcriber heard, appended to the utterance ledger
+ *   { agent }  a clarification, never appended to the utterance ledger
  *   { tools }  a turn's worth of tool calls, dispatched together the way a provider delivers them
  */
 
@@ -17,7 +18,7 @@ export const REFERENCE_PLACEHOLDER = "{{reference}}";
 
 export const DEMO_SCRIPT = [
   {
-    user: "okay so the export button on the dashboard, it does nothing if you've got more than about a thousand rows. just spins.",
+    user: "okay, I think we should make drafts work offline. people keep losing edits on the train.",
   },
 
   // The first attempt is a paraphrase, and the grounding check throws it out. Riff normally hides
@@ -29,11 +30,11 @@ export const DEMO_SCRIPT = [
         name: "draft_update",
         args: {
           operations: [
-            { op: "set_title", text: "Fix the export button" },
+            { op: "set_title", text: "Make drafts work offline" },
             {
               op: "upsert_line",
               section: "intent",
-              text: "The CSV export functionality fails silently for large result sets",
+              text: "Implement offline-first persistence and automatic synchronization for draft content",
             },
           ],
         },
@@ -51,9 +52,96 @@ export const DEMO_SCRIPT = [
             {
               op: "upsert_line",
               section: "intent",
-              text: "the export button on the dashboard does nothing if you've got more than about a thousand rows",
+              text: "I think we should make drafts work offline",
             },
-            { op: "upsert_line", section: "intent", text: "just spins" },
+            { op: "upsert_line", section: "detail", text: "people keep losing edits on the train" },
+          ],
+        },
+      },
+    ],
+  },
+
+  { user: "the Slack thread from Monday has the examples" },
+
+  {
+    note: "finding the Slack discussion without interrupting the thought",
+    tools: [
+      { name: "resolve_reference", args: { phrase: "the Slack thread from Monday", kind: "message" } },
+    ],
+  },
+
+  {
+    tools: [
+      {
+        name: "draft_update",
+        args: {
+          operations: [
+            { op: "upsert_line", section: "detail", text: "the Slack thread from Monday has the examples" },
+            { op: "attach_context", reference_id: REFERENCE_PLACEHOLDER },
+          ],
+        },
+      },
+    ],
+  },
+
+  { user: "didn't we start something on this last week?" },
+
+  {
+    note: "recalling earlier prompts and their recorded outcomes, not copying their words",
+    tools: [{ name: "recall_prompts", args: { query: "offline drafts", limit: 2 } }],
+  },
+
+  { agent: "The local-drafts session or the sync-retry one?" },
+
+  {
+    user: "use the local-drafts session as background, and use the PR I just opened as the starting point. no sync engine yet.",
+  },
+
+  {
+    tools: [
+      { name: "resolve_reference", args: { phrase: "the local-drafts session", kind: "document" } },
+    ],
+  },
+
+  {
+    note: "the earlier session travels as a link, not as new instructions in the speaker's voice",
+    tools: [
+      {
+        name: "draft_update",
+        args: {
+          operations: [
+            { op: "upsert_line", section: "detail", text: "use the local-drafts session as background" },
+            { op: "attach_context", reference_id: REFERENCE_PLACEHOLDER },
+          ],
+        },
+      },
+    ],
+  },
+
+  {
+    tools: [
+      {
+        name: "resolve_reference",
+        args: {
+          phrase: "the PR I just opened",
+          kind: "pull_request",
+          recency: "latest",
+          actor: "me",
+        },
+      },
+    ],
+  },
+
+  {
+    note: "the related PR is attached; the scope still comes from what they just said",
+    tools: [
+      {
+        name: "draft_update",
+        args: {
+          operations: [
+            { op: "upsert_line", section: "detail", text: "use the PR I just opened as the starting point" },
+            { op: "upsert_line", section: "constraint", text: "no sync engine yet" },
+            { op: "attach_context", reference_id: REFERENCE_PLACEHOLDER },
           ],
         },
       },
@@ -64,11 +152,11 @@ export const DEMO_SCRIPT = [
     user: "oh, separate thing, the onboarding doc still says node sixteen. different thing entirely.",
   },
 
-  // The point of the beat. A different request is a different prompt, so the export one is parked
+  // A different request is a different prompt, so the offline-drafts one is parked
   // rather than overwritten, and both stay open until one of them is sent. Riff starts the new take
   // without a word about it, which is what `60-corrections` requires.
   {
-    note: "a different request, so it becomes its own take and the export one is parked",
+    note: "a different request, so it becomes its own take and the offline-drafts one is parked",
     tools: [
       { name: "takes", args: { action: "new", label: "onboarding doc" } },
       {
@@ -87,7 +175,7 @@ export const DEMO_SCRIPT = [
     ],
   },
 
-  { user: "yeah, let's finish the export one first" },
+  { user: "let's finish the offline drafts one first" },
 
   // `t1` is what the model would have remembered from starting the second take, not something the
   // script knows about the engine: take ids are handed back by every `takes` and `draft_update` call.
@@ -96,39 +184,7 @@ export const DEMO_SCRIPT = [
     tools: [{ name: "takes", args: { action: "switch", take_id: "t1" } }],
   },
 
-  { user: "and it's related to the PR I just opened I think" },
-
-  {
-    note: "looking up what they pointed at instead of asking",
-    tools: [
-      {
-        name: "resolve_reference",
-        args: {
-          phrase: "the PR I just opened",
-          kind: "pull_request",
-          recency: "latest",
-          actor: "me",
-        },
-      },
-    ],
-  },
-
-  {
-    note: "the sentence stays theirs; the resolved PR rides along as context",
-    tools: [
-      {
-        name: "draft_update",
-        args: {
-          operations: [
-            { op: "upsert_line", section: "intent", text: "it's related to the PR I just opened" },
-            { op: "attach_context", reference_id: REFERENCE_PLACEHOLDER },
-          ],
-        },
-      },
-    ],
-  },
-
-  { user: "yeah that one. um, and don't touch the generated files, you know how it is" },
+  { user: "and don't touch the generated files, you know how it is" },
 
   {
     note: "a standing instruction it has heard before, reattached in their words",
@@ -136,7 +192,7 @@ export const DEMO_SCRIPT = [
   },
 
   {
-    user: "I should be able to export like fifty thousand rows without it falling over. send it.",
+    user: "I should be able to close the app offline and come back to my edits. send it.",
   },
 
   {
@@ -148,7 +204,7 @@ export const DEMO_SCRIPT = [
             {
               op: "upsert_line",
               section: "acceptance",
-              text: "I should be able to export like fifty thousand rows without it falling over",
+              text: "I should be able to close the app offline and come back to my edits",
             },
           ],
         },

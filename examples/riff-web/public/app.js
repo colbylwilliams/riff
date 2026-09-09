@@ -1,8 +1,7 @@
-import { MemoryStore, RiffSession, SECTIONS, loadBundle } from "@riff/core";
+import { RiffSession, SECTIONS, loadBundle } from "@riff/core";
 
-import { DEMO_MOTIFS, DemoHost } from "./demo-host.js";
 import { DEMO_SCRIPT, substituteReferences } from "./demo-script.js";
-import { ProxyHost } from "./proxy-host.js";
+import { createLiveContext, createScriptedContext } from "./session-context.js";
 import { ScriptedProvider } from "./scripted-provider.js";
 import { observeProvider } from "./observe-provider.js";
 
@@ -81,6 +80,7 @@ let lastSubmission = null;
 let agentEntry = null;
 let liveAvailable = false;
 let githubAvailable = false;
+let githubRepository = "";
 /**
  * The session whose prompts are on screen.
  *
@@ -105,18 +105,6 @@ let pinnedTakeId = null;
 let modeChosen = false;
 /** The id the host gave the last thing it resolved, so the script can attach what was found. */
 let lastReferenceId = null;
-
-/**
- * GitHub when the server has a token, the canned world otherwise.
- *
- * The proxy is a real `RiffHost` as far as the session is concerned; it just answers from the other
- * end of a fetch, which is what keeps the GitHub token off this page.
- */
-function buildHost() {
-  return githubAvailable
-    ? new ProxyHost({ settings: () => ({ allowIssues: ui.allowIssues.checked }) })
-    : new DemoHost();
-}
 
 /* ── running a session ───────────────────────────────────────────────────── */
 
@@ -199,8 +187,7 @@ function buildScripted(id) {
       if (step.user) ui.pending.hidden = phase !== "begin";
       if (step.note && phase === "begin") addEntry({ head: "…", note: step.note, variant: "said" });
     },
-    // The script names a PR by the words used, so the host's id is filled into attach_context.
-    // That is what lets one script run against either world.
+    // References are attached by the ids the host returned, not ids baked into the conversation.
     prepareArgs: (_name, args) => substituteReferences(args, lastReferenceId),
   });
 
@@ -208,9 +195,8 @@ function buildScripted(id) {
     scripted,
     session: new RiffSession({
       bundle,
-      host: buildHost(),
       provider: observeProvider(scripted, { onToolResult: guardedToolResult(id) }),
-      store: new MemoryStore({ motifs: DEMO_MOTIFS }),
+      ...createScriptedContext(),
     }),
   };
 }
@@ -274,9 +260,11 @@ async function buildLive(id) {
       audioContext: meter.audioContext,
       session: new RiffSession({
         bundle,
-        host: buildHost(),
         provider: observeProvider(provider, { onToolResult: guardedToolResult(id) }),
-        store: new MemoryStore({ motifs: DEMO_MOTIFS }),
+        ...createLiveContext({
+          githubAvailable,
+          settings: () => ({ allowIssues: ui.allowIssues.checked }),
+        }),
       }),
     };
   } catch (error) {
@@ -385,6 +373,23 @@ function handleToolResult({ name, args, result }) {
     return;
   }
 
+  if (name === "recall_prompts") {
+    const prompts = result?.prompts ?? [];
+    if (prompts.length === 0) {
+      addEntry({ head: "recall_prompts", note: "no earlier prompts found" });
+    }
+    for (const prompt of prompts) {
+      addEntry({
+        head: `recall_prompts · ${prompt.title}`,
+        quote: prompt.excerpt,
+        note: prompt.outcome
+          ? `Recorded outcome: ${prompt.outcome}`
+          : "Background for the agent, not new prompt text",
+      });
+    }
+    return;
+  }
+
   if (name === "submit_prompt") {
     // A submission can be refused — nothing captured yet, a destination that does not exist, the
     // proxy or GitHub failing. Reporting all of those as "sent" and opening the confirmation shows
@@ -400,8 +405,7 @@ function handleToolResult({ name, args, result }) {
 
     lastSubmission = result;
     addEntry({ head: "submit_prompt", note: result.message ?? "sent" });
-    // Filing for real is opt-in per send, not per session. Left ticked, replaying the script would
-    // open a second issue without anyone asking for one.
+    // Filing for real is opt-in per send, not per session.
     ui.allowIssues.checked = false;
     showSent();
     return;
@@ -823,6 +827,7 @@ function startMeter(stream) {
 function applyConfig(config) {
   liveAvailable = Boolean(config.live);
   githubAvailable = Boolean(config.github?.available);
+  githubRepository = config.github?.repository ?? "";
 
   const liveInput = ui.liveMode.querySelector("input");
   liveInput.disabled = !liveAvailable;
@@ -845,23 +850,31 @@ function applyConfig(config) {
     ui.micLabel.textContent = defaultMicLabel();
   }
 
-  const repository = config.github?.repository;
-  ui.hostPill.textContent = githubAvailable ? `host: ${repository}` : "host: demo";
-  ui.hostPill.title = githubAvailable
-    ? `References resolve against ${repository}, through the server so the token stays there`
-    : "A canned world: one PR, one motif. Add a GitHub token under keys to use a real repository";
-
-  // Sending is a side effect someone can see, so filing for real is opt-in every time.
-  ui.issueMode.hidden = !githubAvailable;
-  if (githubAvailable) {
-    ui.issueMode.title = `Off, sending is a dry run. On, it files an issue in ${repository}`;
-  } else {
-    ui.allowIssues.checked = false;
-  }
+  updateHostMode();
 
   describeCredential(ui.openaiStatus, config.openai?.source);
   describeCredential(ui.githubStatus, config.github?.source, config.github?.login);
-  if (repository) ui.githubRepo.placeholder = repository;
+  if (githubRepository) ui.githubRepo.placeholder = githubRepository;
+}
+
+function updateHostMode() {
+  const live = document.querySelector('input[name="mode"]:checked').value === "live";
+  const realHost = live && githubAvailable;
+  ui.hostPill.textContent = realHost
+    ? `host: ${githubRepository || "GitHub"}`
+    : (live ? "host: none" : "host: demo");
+  ui.hostPill.title = realHost
+    ? `References resolve against ${githubRepository || "GitHub"}, through the server so the token stays there`
+    : (live
+      ? "No context host. Add a GitHub token under keys to resolve real references"
+      : "Sample Slack thread, saved sessions, PR, and motif. Nothing is sent outside the demo");
+
+  ui.issueMode.hidden = !realHost;
+  if (realHost) {
+    ui.issueMode.title = `Off, sending is a dry run. On, it files an issue in ${githubRepository || "GitHub"}`;
+  } else {
+    ui.allowIssues.checked = false;
+  }
 }
 
 function describeCredential(element, source, login) {
@@ -980,10 +993,7 @@ function setMicRunning(running) {
   // A session holds the host it was built with, so changing credentials underneath it would move
   // the pill to a repository the conversation is not actually talking to.
   setKeysAvailable(!running);
-  // Live mode stays off without a key on the server, so it is not simply the inverse of `running`.
-  for (const input of document.querySelectorAll('input[name="mode"]')) {
-    input.disabled = running || (input.value === "live" && !liveAvailable);
-  }
+  setModesAvailable(!running);
 }
 
 function setMicBusy(busy) {
@@ -991,6 +1001,7 @@ function setMicBusy(busy) {
   // `busy` is the window between choosing a host and having a session; `run` is after. Keys are
   // unavailable for both, and this path also has to re-enable them when a start fails outright.
   setKeysAvailable(!busy && !run);
+  setModesAvailable(!busy && !run);
   if (busy) ui.micLabel.textContent = "Starting…";
   else if (!run) ui.micLabel.textContent = defaultMicLabel();
 }
@@ -998,6 +1009,12 @@ function setMicBusy(busy) {
 function setKeysAvailable(available) {
   ui.keysOpen.disabled = !available;
   ui.keysOpen.title = available ? "" : "Stop the session to change keys";
+}
+
+function setModesAvailable(available) {
+  for (const input of document.querySelectorAll('input[name="mode"]')) {
+    input.disabled = !available || (input.value === "live" && !liveAvailable);
+  }
 }
 
 function defaultMicLabel() {
@@ -1068,12 +1085,14 @@ for (const input of document.querySelectorAll('input[name="mode"]')) {
   input.addEventListener("click", () => {
     modeChosen = true;
     ui.micLabel.textContent = defaultMicLabel();
+    updateHostMode();
   });
   // Arrow keys move a radio group's selection in some browsers without a click, so the label still
   // has to follow a plain selection change.
   input.addEventListener("change", () => {
     modeChosen = true;
     ui.micLabel.textContent = defaultMicLabel();
+    updateHostMode();
   });
 }
 

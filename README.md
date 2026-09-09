@@ -25,43 +25,55 @@ The tempting shortcut makes the deeper problem worse. Asking a model to "clean u
 
 ## What Riff does instead
 
-A short session, start to finish:
+This is the conversation the [runnable demo](examples/riff-web/README.md) plays. Its host supplies sample Slack, past-session, and GitHub results; the ledger, grounding check, and prompt below are real.
 
-> **You** — okay so the export button on the dashboard, it does nothing if you've got more than
-> about a thousand rows. just spins.
+> **You** — okay, I think we should make drafts work offline. people keep losing edits on the train.
 >
-> **Riff** — *(silent; captures it, starts a draft)*
+> **You** — the Slack thread from Monday has the examples
 >
-> **You** — and it's related to the PR I just opened I think
+> **Riff** — *(finds the thread and attaches its link without interrupting)*
 >
-> **Riff** — *(silent; resolves and attaches it)*
+> **You** — didn't we start something on this last week?
 >
-> **You** — yeah that one. um, and don't touch the generated files, you know how it is
+> **Riff** — The local-drafts session or the sync-retry one?
 >
-> **Riff** — *(recognizes a standing instruction it has heard before, attaches it)*
+> **You** — use the local-drafts session as background, and use the PR I just opened as the starting point. no sync engine yet.
 >
-> **You** — I should be able to export like fifty thousand rows without it falling over. send it.
+> **You** — oh, separate thing, the onboarding doc still says node sixteen. different thing entirely.
+>
+> **Riff** — *(parks the offline-drafts prompt; opens a separate take for the doc)*
+>
+> **You** — let's finish the offline drafts one first
+>
+> **You** — and don't touch the generated files, you know how it is
+>
+> **You** — I should be able to close the app offline and come back to my edits. send it.
 
 What gets submitted:
 
 ```markdown
-# Fix the export button
+# Make drafts work offline
 
-the export button on the dashboard does nothing if you've got more than about a thousand rows.
-just spins. it's related to the PR I just opened.
+I think we should make drafts work offline.
+
+people keep losing edits on the train. the Slack thread from Monday has the examples. use the local-drafts session as background. use the PR I just opened as the starting point.
 
 **Constraints**
+- no sync engine yet
 - don't touch the generated files
 
 **Done when**
-- I should be able to export like fifty thousand rows without it falling over
+- I should be able to close the app offline and come back to my edits
 
 **Context**
-- acme/web#412 "Chunked uploads" (open) — https://github.com/acme/web/pull/412 — referred to as
-  "the PR I just opened"
+- Slack #feedback "Drafts lost on the train" — https://example.com/slack/offline-drafts — referred to as "the Slack thread from Monday"
+- session-local-drafts "Local drafts" — https://example.com/sessions/local-drafts — referred to as "the local-drafts session"
+- acme/web#412 "Save drafts locally" (open) — https://github.com/acme/web/pull/412 — referred to as "the PR I just opened"
 ```
 
-Riff removed filler without paraphrasing, kept the diagnostic "just spins," resolved the vague PR reference in context rather than rewriting the speaker, and reused the standing constraint verbatim.
+You never stopped to find the Slack link, reconstruct last week's two attempts, or fetch the PR. Riff kept "I think," asked only which earlier session you meant, and reattached your saved constraint verbatim. The onboarding tangent is still parked as its own prompt. Nothing from Slack or the recalled prompts is passed off as something you said.
+
+Run it with `npm run demo` after the setup below. The demo also shows an invented paraphrase being rejected before your words go into the draft. Scripted mode always uses sample data and sends nothing outside the demo; real sources come from your app's [host bridge](docs/host-bridge.md), not built-in Slack or session-history connectors.
 
 ## How "their words" is enforced
 
@@ -166,7 +178,7 @@ npm install && npm run build
 npm run demo                     # http://localhost:4173
 ```
 
-It replays the conversation above through the real engine — real ledger, real grounding check, real render — and shows the draft assembling itself line by line, including a paraphrase being rejected. Click **keys** in the page to paste an OpenAI key and talk to it yourself, or a GitHub token to have it resolve references against a real repository. See [examples/riff-web](examples/riff-web).
+It replays the conversation above through the real engine and shows the draft assembling itself line by line, the source lookups, and the paraphrase being rejected. Click **keys** in the page to add an OpenAI key for live mic mode and, optionally, a GitHub token for real repository references in that mode. Scripted mode stays self-contained even when keys are configured. See [the demo README](examples/riff-web/README.md).
 
 ### TypeScript
 
