@@ -33,7 +33,7 @@ This is the conversation the [runnable demo](examples/riff-web/README.md) plays.
 >
 > **Riff** — *(finds the thread and attaches its link without interrupting)*
 >
-> **You** — didn't I already riff on this last week?
+> **You** — didn't we start something on this last week?
 >
 > **Riff** — The local-drafts session or the sync-retry one?
 >

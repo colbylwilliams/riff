@@ -84,7 +84,7 @@ export const DEMO_SCRIPT = [
     ],
   },
 
-  { user: "didn't I already riff on this last week?" },
+  { user: "didn't we start something on this last week?" },
 
   {
     note: "recalling earlier prompts and their recorded outcomes, not copying their words",
