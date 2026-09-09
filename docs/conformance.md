@@ -56,8 +56,9 @@ swift test --package-path swift              # Swift, the same cases
 cargo test --manifest-path rust/Cargo.toml   # Rust, the same cases
 ```
 
-The cases are mirrored into each binding's test target by `tools/build-bundle.mjs`, the same way the
-agent bundle is, and `npm test` fails if any copy has drifted.
+The cases are mirrored into each binding's test target by [`build-bundle.mjs`](../tools/build-bundle.mjs), the same way the agent bundle is, and `npm test` fails if any copy has drifted.
+
+`npm test` also runs the engine, provider, and host tests and the [headless demo check](../examples/riff-web/README.md#checking-it-without-a-browser). That check compares the scripted dialogue and rendered prompt against the main [README](../README.md#what-riff-does-instead), including the separation of the submitted request from the parked tangent. After building, `npm run demo:verify` runs just that check.
 
 ## Adding a case
 
